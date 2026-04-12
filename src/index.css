@@ -31,8 +31,31 @@
 }
 
 @layer base {
+  :root {
+    color-scheme: dark;
+  }
+
+  :root.light {
+    color-scheme: light;
+    --color-background: #f8f5ef;
+    --color-surface: #f8f5ef;
+    --color-surface-low: #fffdf8;
+    --color-surface-high: #eee6da;
+    --color-surface-highest: #e4d9c8;
+    --color-primary: #d02f49;
+    --color-primary-container: #ef5b71;
+    --color-on-primary-fixed: #fff6f7;
+    --color-secondary: #9a7725;
+    --color-on-surface: #26201a;
+    --color-on-surface-variant: #5e4b40;
+    --color-outline: #9f8776;
+    --color-outline-variant: #ccbba9;
+    --color-error: #b3261e;
+    --color-error-container: #ffd9d4;
+  }
+
   body {
-    @apply bg-background text-on-surface font-sans antialiased;
+    @apply bg-background text-on-surface font-sans antialiased transition-colors duration-300;
   }
 }
 
@@ -47,5 +70,21 @@
 
   .text-neon-glow {
     text-shadow: 0 0 10px rgba(255, 179, 178, 0.4);
+  }
+
+  .custom-scrollbar::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+  }
+
+  .custom-scrollbar::-webkit-scrollbar-thumb {
+    background: color-mix(in oklab, var(--color-surface-highest) 80%, transparent);
+    border-radius: 999px;
+    border: 2px solid transparent;
+    background-clip: content-box;
+  }
+
+  .custom-scrollbar::-webkit-scrollbar-track {
+    background: transparent;
   }
 }
