@@ -15,10 +15,7 @@ import {
   ShoppingBag,
   Info,
   ArrowRight,
-  ShoppingCart,
-  Check,
   Clock,
-  AlertTriangle,
   Globe,
   Moon,
   Sun,
@@ -34,7 +31,6 @@ import {
   BarChart, 
   Bar, 
   XAxis, 
-  YAxis, 
   CartesianGrid, 
   Tooltip, 
   ResponsiveContainer,
@@ -46,23 +42,28 @@ import { checkSupabaseConnection, type SupabaseConnectionState } from './lib/sup
 import {
   deleteStaffMember,
   deleteIngredient,
+  deleteTruck,
   fetchIngredients,
   fetchMenuItems,
   fetchOrders,
   fetchStaffAccounts,
   fetchRolePermissions,
   fetchStaffMembers,
+  fetchTrucks,
   insertIngredient,
   insertMenuItem,
   insertOrder,
   subscribeToOpsRealtime,
   deleteMenuItem,
   updateMenuItemStock,
+  updateOrderStatus,
   updateStaffPassword,
   uploadOpsImage,
   upsertStaffAccount,
+  upsertTruck,
   upsertRolePermission,
   upsertStaffMember,
+  type DbTruck,
 } from './lib/supabase-data';
 
 // --- Types ---
@@ -94,6 +95,7 @@ interface MenuItem {
   image: string;
   description: string;
   active: boolean;
+  truckId?: string;
 }
 
 interface Order {
@@ -103,16 +105,19 @@ interface Order {
   total: number;
   status: 'new' | 'preparing' | 'delivered';
   time: string;
-  type?: 'dine-in' | 'takeout';
+  type?: 'dine-in' | 'takeout' | 'delivery';
   createdAt?: number;
   note?: string;
   lineItems?: { name: string; qty: number; station: 'HOT' | 'COLD' }[];
+  truckId?: string;
+  deliveryFee?: number;
+  contactNumber?: string;
 }
 
 interface KitchenOrder {
   id: string;
   customer: string;
-  type: 'dine-in' | 'takeout';
+  type: 'dine-in' | 'takeout' | 'delivery';
   elapsed: string;
   est: string;
   status: 'overdue' | 'delayed' | 'new';
@@ -120,6 +125,8 @@ interface KitchenOrder {
   note?: string;
   dbStatus: Order['status'];
 }
+
+type Truck = DbTruck;
 
 interface StaffMember {
   id: string;
@@ -135,17 +142,6 @@ interface StaffAccount {
   passwordHash: string;
   mustChangePassword: boolean;
   active: boolean;
-}
-
-interface InventoryMovement {
-  id: string;
-  itemId: string;
-  itemName: string;
-  prevStock: number;
-  nextStock: number;
-  delta: number;
-  reason: string;
-  timestamp: number;
 }
 
 interface IngredientItem {
@@ -246,45 +242,6 @@ const RECENT_ORDERS: Order[] = [
   { id: '#TK-8940', customer: 'Sato M.', items: '1x Paris-Tokyo Fusion Plate', total: 3200, status: 'delivered', time: '13:45' }
 ];
 
-const KITCHEN_ORDERS: KitchenOrder[] = [
-  {
-    id: '#TXP-9402',
-    customer: 'Marc Jacobs',
-    type: 'dine-in',
-    elapsed: '24m',
-    est: '15m',
-    status: 'overdue',
-    items: [
-      { name: 'Wagyu Beef Bao', qty: 2, station: 'HOT' },
-      { name: 'Truffle Miso Ramen', qty: 1, station: 'HOT' }
-    ],
-    note: 'No scallions on the Ramen, please. Allergy.'
-  },
-  {
-    id: '#TXP-9405',
-    customer: 'Takeout',
-    type: 'takeout',
-    elapsed: '16m',
-    est: '15m',
-    status: 'delayed',
-    items: [
-      { name: 'Paris-Tokyo Macarons', qty: 3, station: 'COLD' },
-      { name: 'Yuzu Cheesecake', qty: 1, station: 'COLD' }
-    ]
-  },
-  {
-    id: '#TXP-9408',
-    customer: 'Table 12',
-    type: 'dine-in',
-    elapsed: '3m',
-    est: '10m',
-    status: 'new',
-    items: [
-      { name: 'Matcha Escargot', qty: 1, station: 'HOT' },
-      { name: 'Tuna Tataki Niçoise', qty: 2, station: 'COLD' }
-    ]
-  }
-];
 
 const STAFF_MEMBERS_MOCK: StaffMember[] = [
   { id: 's-1', name: 'Kenji Sato', role: 'Manager', image: 'https://picsum.photos/seed/kenji/100/100', active: true },
@@ -317,24 +274,7 @@ const DEFAULT_PERMISSION_MATRIX: PermissionMatrix = {
   Kitchen: { dashboard: false, kitchen: true, pos: false, inventory: false, staff: false },
 };
 
-const SALES_DATA = [
-  { time: '10:00', value: 12000 },
-  { time: '11:00', value: 25000 },
-  { time: '12:00', value: 38000 },
-  { time: '13:00', value: 42000 },
-  { time: '14:00', value: 64000 },
-  { time: '15:00', value: 48000 },
-  { time: '16:00', value: 32000 },
-  { time: '17:00', value: 28000 },
-  { time: '18:00', value: 55000 },
-  { time: '19:00', value: 72000 },
-  { time: '20:00', value: 85000 },
-  { time: '21:00', value: 45000 },
-  { time: '22:00', value: 30000 },
-];
-
 const MENU_CATEGORY_OPTIONS = ['อาหาร', 'เครื่องดื่ม'];
-const INGREDIENT_CATEGORY_OPTIONS = ['Meat', 'Seafood', 'Vegetable', 'Sauce', 'Spice', 'Oil', 'Noodles', 'Dairy', 'Dry Goods', 'General'];
 
 const TEXT = {
   en: {
@@ -352,7 +292,6 @@ const TEXT = {
     supabaseError: 'Supabase Error',
     adminDashboard: 'Admin Dashboard',
     posTerminal: 'POS Terminal',
-    menuManagement: 'Inventory Management',
     kitchenBoard: 'Kitchen Board',
     settingsTitle: 'Staff & Permissions',
     syncing: 'Syncing with Supabase...',
@@ -361,6 +300,9 @@ const TEXT = {
     activeOrders: 'Active Orders',
     inPerson: 'In-Person',
     takeout: 'Takeout',
+    delivery: 'Delivery',
+    deliveryFee: 'Delivery Fee',
+    contactNumber: 'Phone Number',
     currentOrder: 'Current Order',
     customerName: 'Customer name',
     orderNote: 'Order note',
@@ -374,7 +316,6 @@ const TEXT = {
     inventoryControl: 'Inventory Control',
     atelierStock: 'Atelier Stock',
     searchProducts: 'Search products...',
-    addProduct: 'Add Product',
     product: 'Product',
     category: 'Category',
     cost: 'Cost',
@@ -444,11 +385,9 @@ const TEXT = {
     consume: 'Usage',
     addMenuItem: 'Add Menu',
     menuName: 'Menu name',
-    imageUrl: 'Image URL',
     uploadImage: 'Upload Image',
     fieldHintName: 'Enter ingredient name (e.g. Truffle Oil)',
     fieldHintImage: 'Upload ingredient photo (JPG/PNG)',
-    fieldHintCategory: 'Choose ingredient category',
     fieldHintStock: 'Enter remaining quantity (number)',
     fieldHintCost: 'Enter cost per unit',
     menuFieldHintName: 'Enter menu name (e.g. Wagyu Sando)',
@@ -459,7 +398,6 @@ const TEXT = {
     menuFieldHintPrice: 'Enter sale price per menu',
     menuFieldHintDesc: 'Short description for staff/pos',
     ingredientName: 'Ingredient name',
-    ingredientUnit: 'Unit',
     ingredientUnitCost: 'Unit cost',
     ingredientStock: 'Ingredient stock',
     addIngredient: 'Add Ingredient',
@@ -501,7 +439,6 @@ const TEXT = {
     supabaseError: 'Supabase ผิดพลาด',
     adminDashboard: 'แดชบอร์ดผู้ดูแล',
     posTerminal: 'หน้าขาย POS',
-    menuManagement: 'จัดการสต็อก',
     kitchenBoard: 'บอร์ดครัว',
     settingsTitle: 'พนักงานและสิทธิ์',
     syncing: 'กำลังซิงก์กับ Supabase...',
@@ -510,6 +447,9 @@ const TEXT = {
     activeOrders: 'ออเดอร์ที่กำลังทำ',
     inPerson: 'หน้าร้าน',
     takeout: 'กลับบ้าน',
+    delivery: 'เดลิเวอรี',
+    deliveryFee: 'ค่าจัดส่ง',
+    contactNumber: 'เบอร์ติดต่อ',
     currentOrder: 'ออเดอร์ปัจจุบัน',
     customerName: 'ชื่อลูกค้า',
     orderNote: 'หมายเหตุออเดอร์',
@@ -523,7 +463,6 @@ const TEXT = {
     inventoryControl: 'ควบคุมสต็อก',
     atelierStock: 'เมนูของร้าน',
     searchProducts: 'ค้นหาสินค้า...',
-    addProduct: 'เพิ่มสินค้า',
     product: 'สินค้า',
     category: 'หมวดหมู่',
     cost: 'ต้นทุน',
@@ -593,11 +532,9 @@ const TEXT = {
     consume: 'ตัดสต็อก',
     addMenuItem: 'เพิ่มเมนู',
     menuName: 'ชื่อเมนู',
-    imageUrl: 'ลิงก์รูปภาพ',
     uploadImage: 'อัปโหลดรูป',
     fieldHintName: 'ใส่ชื่อวัตถุดิบ (เช่น Truffle Oil)',
     fieldHintImage: 'อัปโหลดรูปวัตถุดิบ (JPG/PNG)',
-    fieldHintCategory: 'เลือกหมวดหมู่วัตถุดิบ',
     fieldHintStock: 'ใส่จำนวนคงเหลือ (ตัวเลข)',
     fieldHintCost: 'ใส่ต้นทุนต่อหน่วย',
     menuFieldHintName: 'ใส่ชื่อเมนู (เช่น Wagyu Sando)',
@@ -608,7 +545,6 @@ const TEXT = {
     menuFieldHintPrice: 'ใส่ราคาขายต่อเมนู',
     menuFieldHintDesc: 'คำอธิบายสั้นๆ สำหรับพนักงาน/หน้าขาย',
     ingredientName: 'ชื่อวัตถุดิบ',
-    ingredientUnit: 'หน่วย',
     ingredientUnitCost: 'ราคาต่อหน่วย',
     ingredientStock: 'คงเหลือวัตถุดิบ',
     addIngredient: 'เพิ่มวัตถุดิบ',
@@ -1105,7 +1041,6 @@ const DashboardView = ({
 
   const newCount = orders.filter((order) => order.status === 'new').length;
   const preparingCount = orders.filter((order) => order.status === 'preparing').length;
-  const deliveredCount = orders.filter((order) => order.status === 'delivered').length;
   const totalRevenue = orders.reduce((sum, order) => sum + order.total, 0);
   const averageOrder = orders.length ? Math.round(totalRevenue / orders.length) : 0;
   const lowStockItems = menuItems.filter((item) => item.stock <= 10).slice(0, 3);
@@ -1459,23 +1394,30 @@ const POSView = ({
   onSubmitOrder,
   labels,
   formatMoney,
+  todayOrderCount,
 }: {
   menuItems: MenuItem[];
   onSubmitOrder: (payload: {
+    id: string;
     customer: string;
     items: string;
     total: number;
-    type: 'dine-in' | 'takeout';
+    type: 'dine-in' | 'takeout' | 'delivery';
     note?: string;
     lineItems: { name: string; qty: number; station: 'HOT' | 'COLD' }[];
+    deliveryFee?: number;
+    contactNumber?: string;
   }) => Promise<void>;
   labels: typeof TEXT.en;
   formatMoney: (value: number) => string;
+  todayOrderCount: number;
 }) => {
   const [cart, setCart] = useState<{ item: MenuItem; qty: number }[]>([]);
   const [note, setNote] = useState('');
   const [customer, setCustomer] = useState('');
-  const [orderType, setOrderType] = useState<'dine-in' | 'takeout'>('dine-in');
+  const [orderType, setOrderType] = useState<'dine-in' | 'takeout' | 'delivery'>('dine-in');
+  const [deliveryFee, setDeliveryFee] = useState<string>('');
+  const [contactNumber, setContactNumber] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [selectedCategory, setSelectedCategory] = useState<string>(labels.filterAll);
   
@@ -1504,8 +1446,10 @@ const POSView = ({
 
   const subtotal = cart.reduce((acc, i) => acc + (i.item.price * i.qty), 0);
   const tax = subtotal * 0.1;
-  const total = subtotal + tax;
-  const orderId = `#TXP-${Math.floor(Date.now() % 100000)}`;
+  const deliveryCost = orderType === 'delivery' ? Number(deliveryFee) || 0 : 0;
+  const total = subtotal + tax + deliveryCost;
+  const orderPrefix = orderType === 'dine-in' ? 'DIN' : orderType === 'takeout' ? 'TAK' : 'DEL';
+  const orderId = `#TXP-${orderPrefix}-${String(todayOrderCount + 1).padStart(3, '0')}`;
 
   const changeQty = (itemId: string, delta: number) => {
     setCart((prev) =>
@@ -1525,6 +1469,7 @@ const POSView = ({
     if (cart.length === 0 || isSubmitting) return;
     setIsSubmitting(true);
     const payload = {
+      id: `TXP-${orderPrefix}-${String(todayOrderCount + 1).padStart(3, '0')}`,
       customer: customer.trim() || 'Walk-in Guest',
       items: cart.map((line) => `${line.qty}x ${line.item.name}`).join(', '),
       total: Math.round(total),
@@ -1538,11 +1483,16 @@ const POSView = ({
             ? 'COLD'
             : 'HOT',
       })),
+      deliveryFee: orderType === 'delivery' ? Number(deliveryFee) || undefined : undefined,
+      contactNumber: orderType === 'delivery' ? contactNumber.trim() || undefined : undefined,
     };
     await onSubmitOrder(payload);
     setCart([]);
     setCustomer('');
     setNote('');
+    setDeliveryFee('');
+    setContactNumber('');
+    setOrderType('dine-in');
     setIsSubmitting(false);
   };
 
@@ -1609,6 +1559,15 @@ const POSView = ({
             >
               {labels.takeout}
             </button>
+            <button
+              onClick={() => setOrderType('delivery')}
+              className={cn(
+                "flex-1 py-2 text-xs font-bold font-headline rounded-sm uppercase tracking-wider",
+                orderType === 'delivery' ? "bg-primary text-on-primary-fixed" : "text-on-surface/40 hover:text-on-surface",
+              )}
+            >
+              {labels.delivery}
+            </button>
           </div>
           <div className="mt-4 flex items-center justify-between">
             <h2 className="font-headline font-bold text-xl uppercase tracking-tighter">{labels.currentOrder}</h2>
@@ -1627,6 +1586,24 @@ const POSView = ({
               placeholder={labels.orderNote}
               className="w-full bg-surface-high px-3 py-2 rounded-sm text-sm text-on-surface placeholder:text-on-surface/40 outline-none"
             />
+            {orderType === 'delivery' && (
+              <div className="flex gap-2">
+                <input
+                  value={contactNumber}
+                  onChange={(event) => setContactNumber(event.target.value)}
+                  placeholder={labels.contactNumber}
+                  className="w-2/3 bg-surface-high px-3 py-2 rounded-sm text-sm text-on-surface placeholder:text-on-surface/40 outline-none"
+                />
+                <input
+                  type="number"
+                  value={deliveryFee}
+                  onChange={(event) => setDeliveryFee(event.target.value)}
+                  placeholder={labels.deliveryFee}
+                  className="w-1/3 bg-surface-high px-3 py-2 rounded-sm text-sm text-on-surface placeholder:text-on-surface/40 outline-none"
+                  min="0"
+                />
+              </div>
+            )}
           </div>
         </div>
 
@@ -1685,6 +1662,12 @@ const POSView = ({
               <span>{labels.tax} (10%)</span>
               <span>{formatMoney(tax)}</span>
             </div>
+            {orderType === 'delivery' && (
+              <div className="flex justify-between text-xs font-mono text-on-surface/60">
+                <span>{labels.deliveryFee}</span>
+                <span>{formatMoney(deliveryCost)}</span>
+              </div>
+            )}
             <div className="flex justify-between text-lg font-headline font-black pt-2 border-t border-outline-variant/10 text-primary">
               <span>{labels.total}</span>
               <span>{formatMoney(total)}</span>
@@ -1869,7 +1852,6 @@ const KitchenView = ({
 const MenuView = ({
   menuItems,
   onChangeStock,
-  inventoryMovements,
   ingredients,
   menuRecipes,
   onAddMenuItem,
@@ -1884,7 +1866,6 @@ const MenuView = ({
 }: {
   menuItems: MenuItem[];
   onChangeStock: (itemId: string, nextStock: number, reason?: string) => void;
-  inventoryMovements: InventoryMovement[];
   ingredients: IngredientItem[];
   menuRecipes: Record<string, MenuRecipeLine[]>;
   onAddMenuItem: (payload: {
@@ -2107,12 +2088,6 @@ const MenuView = ({
       ingredientId: selectedIngredientId,
       quantity: recipeQty,
     });
-  };
-
-  const stockStatus = (stock: number) => {
-    if (stock <= 0) return { label: labels.statusOut, cls: 'bg-error/20 text-error' };
-    if (stock <= 10) return { label: labels.statusLow, cls: 'bg-secondary/20 text-secondary' };
-    return { label: labels.statusAvailable, cls: 'bg-primary/15 text-primary' };
   };
 
   return (
@@ -3613,7 +3588,6 @@ export default function App() {
   const [staffMembers, setStaffMembers] = useState<StaffMember[]>([]);
   const [staffAccounts, setStaffAccounts] = useState<StaffAccount[]>([]);
   const [permissionMatrix, setPermissionMatrix] = useState<PermissionMatrix>(DEFAULT_PERMISSION_MATRIX);
-  const [inventoryMovements, setInventoryMovements] = useState<InventoryMovement[]>([]);
   const [isRemoteSyncing, setIsRemoteSyncing] = useState(false);
 
   useEffect(() => {
@@ -3871,32 +3845,14 @@ export default function App() {
     lastProcessedOrderIds.current = currentIds;
   }, [orders, isSoundEnabled, currentTruckId]);
 
-  const handleChangeStock = (itemId: string, nextStock: number, reason?: string) => {
-    let movement: InventoryMovement | null = null;
+  const handleChangeStock = (itemId: string, nextStock: number, _reason?: string) => {
     setMenuItems((prev) =>
       prev.map((item) => {
         if (item.id !== itemId) return item;
         const clampedStock = Math.max(0, nextStock);
-        const delta = clampedStock - item.stock;
-        if (delta !== 0) {
-          movement = {
-            id: `mv-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
-            itemId: item.id,
-            itemName: item.name,
-            prevStock: item.stock,
-            nextStock: clampedStock,
-            delta,
-            reason: reason ?? (delta > 0 ? labels.restock : labels.consume),
-            timestamp: Date.now(),
-          };
-        }
         return { ...item, stock: clampedStock };
       }),
     );
-
-    if (movement) {
-      setInventoryMovements((prev) => [movement as InventoryMovement, ...prev].slice(0, 120));
-    }
 
     if (supabaseStatus === 'connected') {
       updateMenuItemStock(itemId, Math.max(0, nextStock)).catch(() => {
@@ -3906,15 +3862,18 @@ export default function App() {
   };
 
   const handleSubmitOrder = async (payload: {
+    id: string;
     customer: string;
     items: string;
     total: number;
-    type: 'dine-in' | 'takeout';
+    type: 'dine-in' | 'takeout' | 'delivery';
     note?: string;
     lineItems: { name: string; qty: number; station: 'HOT' | 'COLD' }[];
+    deliveryFee?: number;
+    contactNumber?: string;
   }) => {
     const localOrder: Order = {
-      id: `TXP-${Date.now().toString().slice(-6)}`,
+      id: payload.id,
       customer: payload.customer,
       items: payload.items,
       total: payload.total,
@@ -3925,6 +3884,8 @@ export default function App() {
       createdAt: Date.now(),
       lineItems: payload.lineItems,
       truckId: currentTruckId || undefined,
+      deliveryFee: payload.deliveryFee,
+      contactNumber: payload.contactNumber,
     };
     setOrders((prev) => [localOrder, ...prev].slice(0, 50));
 
@@ -4484,6 +4445,7 @@ export default function App() {
             onSubmitOrder={handleSubmitOrder} 
             labels={labels} 
             formatMoney={formatMoney} 
+            todayOrderCount={orders.filter(o => new Date(o.createdAt || 0).toDateString() === new Date().toDateString() && (!currentTruckId || o.truckId === currentTruckId)).length}
           />
         );
       case 'inventoryMenu':
@@ -4491,7 +4453,6 @@ export default function App() {
           <MenuView
             menuItems={menuItems}
             onChangeStock={handleChangeStock}
-            inventoryMovements={inventoryMovements}
             ingredients={ingredients}
             menuRecipes={menuRecipes}
             onAddMenuItem={handleAddMenuItem}

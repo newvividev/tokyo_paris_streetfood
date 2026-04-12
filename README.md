@@ -132,3 +132,32 @@ to public
 using (bucket_id = 'ops-media')
 with check (bucket_id = 'ops-media');
 ```
+
+## Deploy to Cloudflare Pages
+
+### Option A: Deploy via Cloudflare Dashboard (recommended)
+
+1. Push this repo to GitHub.
+2. In Cloudflare: `Workers & Pages` > `Create` > `Pages` > `Connect to Git`.
+3. Select this repository and use:
+   - Build command: `npm run build`
+   - Build output directory: `dist`
+4. Add Environment Variables in Pages project settings (both Preview and Production):
+   - `VITE_SUPABASE_URL`
+   - `VITE_SUPABASE_ANON_KEY`
+   - `VITE_SUPABASE_STORAGE_BUCKET` (example: `ops-media`)
+5. Re-deploy after saving env vars.
+
+### Option B: Deploy from CLI
+
+1. Login to Cloudflare:
+   `npx wrangler login`
+2. Build app:
+   `npm run build`
+3. Deploy:
+   `npm run deploy:pages -- --project-name <your-pages-project-name>`
+
+### Local preview with Pages runtime
+
+- Build first: `npm run build`
+- Preview: `npm run preview:pages`

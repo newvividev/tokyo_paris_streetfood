@@ -27,11 +27,13 @@ export type DbOrder = {
   total: number;
   status: 'new' | 'preparing' | 'delivered';
   time: string;
-  type?: 'dine-in' | 'takeout';
+  type?: 'dine-in' | 'takeout' | 'delivery';
   createdAt?: number;
   note?: string;
   lineItems?: DbOrderLine[];
   truckId?: string;
+  deliveryFee?: number;
+  contactNumber?: string;
 };
 
 export type DbTruck = {
@@ -120,11 +122,13 @@ const normalizeOrder = (row: any): DbOrder => {
     total: Number(row.total ?? 0),
     status: row.status === 'preparing' || row.status === 'delivered' ? row.status : 'new',
     time: String(row.time ?? ''),
-    type: row.type === 'takeout' ? 'takeout' : 'dine-in',
+    type: row.type === 'takeout' ? 'takeout' : row.type === 'delivery' ? 'delivery' : 'dine-in',
     createdAt,
     note: typeof row.note === 'string' ? row.note : undefined,
     lineItems,
     truckId: row.truck_id ? String(row.truck_id) : undefined,
+    deliveryFee: row.delivery_fee ? Number(row.delivery_fee) : undefined,
+    contactNumber: row.contact_number ? String(row.contact_number) : undefined,
   };
 };
 
@@ -379,6 +383,8 @@ export const insertOrder = async (order: DbOrder): Promise<DbOrder | null> => {
       line_items: order.lineItems ?? [],
       created_at: order.createdAt ? new Date(order.createdAt).toISOString() : new Date().toISOString(),
       truck_id: order.truckId || null,
+      delivery_fee: order.deliveryFee ?? null,
+      contact_number: order.contactNumber ?? null,
     };
     const { data, error } = await supabase.from('orders').insert(payload).select().single();
     if (error || !data) return null;
