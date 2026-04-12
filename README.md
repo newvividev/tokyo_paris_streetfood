@@ -29,6 +29,7 @@ View your app in AI Studio: https://ai.studio/apps/0921448f-9bed-4b83-8a10-06ddb
 3. Copy URL and anon key into `.env.local`:
    - `VITE_SUPABASE_URL`
    - `VITE_SUPABASE_ANON_KEY`
+   - `VITE_SUPABASE_STORAGE_BUCKET` (example: `ops-media`)
 4. Start app with `npm run dev` and login.
 5. Check top bar badge:
    - `Supabase Connected` means frontend is connected.
@@ -49,8 +50,12 @@ create table if not exists public.menu_items (
   stock integer not null default 0,
   sku text not null default '',
   image text not null default '',
-  description text not null default ''
+  description text not null default '',
+  is_active boolean not null default true
 );
+
+alter table public.menu_items
+  add column if not exists is_active boolean not null default true;
 
 create table if not exists public.orders (
   id text primary key,
@@ -92,4 +97,38 @@ create table if not exists public.staff_accounts (
   is_active boolean not null default true,
   updated_at timestamptz not null default now()
 );
+
+create table if not exists public.ingredients (
+  id text primary key,
+  name text not null,
+  category text not null default 'General',
+  unit text not null default 'unit',
+  unit_cost numeric not null default 0,
+  stock numeric not null default 0,
+  image text not null default '',
+  created_at timestamptz not null default now()
+);
+
+alter table public.ingredients
+  add column if not exists category text not null default 'General';
+
+insert into storage.buckets (id, name, public)
+values ('ops-media', 'ops-media', true)
+on conflict (id) do nothing;
+
+create policy "Public read ops-media"
+on storage.objects for select
+to public
+using (bucket_id = 'ops-media');
+
+create policy "Public upload ops-media"
+on storage.objects for insert
+to public
+with check (bucket_id = 'ops-media');
+
+create policy "Public update ops-media"
+on storage.objects for update
+to public
+using (bucket_id = 'ops-media')
+with check (bucket_id = 'ops-media');
 ```

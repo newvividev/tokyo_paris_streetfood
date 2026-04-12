@@ -10,6 +10,8 @@ export type DbMenuItem = {
   sku: string;
   image: string;
   description: string;
+  active?: boolean;
+  truckId?: string;
 };
 
 export type DbOrderLine = {
@@ -29,6 +31,14 @@ export type DbOrder = {
   createdAt?: number;
   note?: string;
   lineItems?: DbOrderLine[];
+  truckId?: string;
+};
+
+export type DbTruck = {
+  id: string;
+  name: string;
+  location: string;
+  active: boolean;
 };
 
 export type StaffRole = 'Manager' | 'Server' | 'Kitchen';
@@ -58,6 +68,19 @@ export type DbStaffAccount = {
   mustChangePassword: boolean;
 };
 
+export type DbIngredient = {
+  id: string;
+  name: string;
+  category: string;
+  unit: string;
+  unitCost: number;
+  stock: number;
+  image: string;
+};
+
+const getStorageBucketName = () =>
+  String(import.meta.env.VITE_SUPABASE_STORAGE_BUCKET ?? 'ops-media').trim() || 'ops-media';
+
 const normalizeMenuItem = (row: any): DbMenuItem => ({
   id: String(row.id),
   name: String(row.name ?? ''),
@@ -68,6 +91,8 @@ const normalizeMenuItem = (row: any): DbMenuItem => ({
   sku: String(row.sku ?? ''),
   image: String(row.image ?? ''),
   description: String(row.description ?? ''),
+  active: typeof row.is_active === 'boolean' ? row.is_active : typeof row.active === 'boolean' ? row.active : true,
+  truckId: row.truck_id ? String(row.truck_id) : undefined,
 });
 
 const normalizeOrder = (row: any): DbOrder => {
@@ -99,8 +124,16 @@ const normalizeOrder = (row: any): DbOrder => {
     createdAt,
     note: typeof row.note === 'string' ? row.note : undefined,
     lineItems,
+    truckId: row.truck_id ? String(row.truck_id) : undefined,
   };
 };
+
+const normalizeTruck = (row: any): DbTruck => ({
+  id: String(row.id),
+  name: String(row.name ?? 'Unnamed Truck'),
+  location: String(row.location ?? ''),
+  active: Boolean(row.is_active ?? true),
+});
 
 const normalizeStaffMember = (row: any): DbStaffMember => ({
   id: String(row.id),
@@ -127,14 +160,54 @@ const normalizeStaffAccount = (row: any): DbStaffAccount => ({
   mustChangePassword: Boolean(row.must_change_password ?? true),
 });
 
-export const fetchMenuItems = async (): Promise<DbMenuItem[] | null> => {
+const normalizeIngredient = (row: any): DbIngredient => ({
+  id: String(row.id),
+  name: String(row.name ?? ''),
+  category: String(row.category ?? 'General'),
+  unit: String(row.unit ?? 'unit'),
+  unitCost: Number(row.unit_cost ?? row.unitCost ?? 0),
+  stock: Number(row.stock ?? 0),
+  image: String(row.image ?? ''),
+});
+
+export const uploadOpsImage = async (
+  file: File,
+  pathPrefix: 'menus' | 'ingredients' | 'staff',
+): Promise<string | null> => {
   if (!isSupabaseConfigured()) return null;
   try {
     const supabase = getSupabaseClient();
-    const { data, error } = await supabase
+    const bucket = getStorageBucketName();
+    const ext = file.name.includes('.') ? file.name.split('.').pop() : 'jpg';
+    const filePath = `${pathPrefix}/${Date.now()}-${Math.random().toString(36).slice(2, 8)}.${ext}`;
+
+    const { error } = await supabase.storage.from(bucket).upload(filePath, file, {
+      cacheControl: '3600',
+      upsert: true,
+      contentType: file.type || undefined,
+    });
+    if (error) return null;
+
+    const { data } = supabase.storage.from(bucket).getPublicUrl(filePath);
+    return data?.publicUrl ?? null;
+  } catch {
+    return null;
+  }
+};
+
+export const fetchMenuItems = async (truckId?: string): Promise<DbMenuItem[] | null> => {
+  if (!isSupabaseConfigured()) return null;
+  try {
+    const supabase = getSupabaseClient();
+    let query = supabase
       .from('menu_items')
-      .select('id,name,category,price,cost,stock,sku,image,description')
-      .order('name', { ascending: true });
+      .select('id,name,category,price,cost,stock,sku,image,description,is_active,truck_id');
+    
+    if (truckId) {
+      query = query.eq('truck_id', truckId);
+    }
+
+    const { data, error } = await query.order('name', { ascending: true });
 
     if (error || !data) return null;
     return data.map(normalizeMenuItem);
@@ -143,20 +216,107 @@ export const fetchMenuItems = async (): Promise<DbMenuItem[] | null> => {
   }
 };
 
-export const fetchOrders = async (): Promise<DbOrder[] | null> => {
+export const insertMenuItem = async (item: DbMenuItem): Promise<DbMenuItem | null> => {
   if (!isSupabaseConfigured()) return null;
   try {
     const supabase = getSupabaseClient();
-    const { data, error } = await supabase
+    const payload = {
+      id: item.id,
+      name: item.name,
+      category: item.category,
+      price: item.price,
+      cost: item.cost,
+      stock: item.stock,
+      sku: item.sku,
+      image: item.image,
+      description: item.description,
+      is_active: item.active ?? true,
+      truck_id: item.truckId || null,
+    };
+    const { data, error } = await supabase.from('menu_items').upsert(payload).select().single();
+    if (error || !data) return null;
+    return normalizeMenuItem(data);
+  } catch {
+    return null;
+  }
+};
+
+export const deleteMenuItem = async (itemId: string): Promise<boolean> => {
+  if (!isSupabaseConfigured()) return false;
+  try {
+    const supabase = getSupabaseClient();
+    const { error } = await supabase.from('menu_items').delete().eq('id', itemId);
+    return !error;
+  } catch {
+    return false;
+  }
+};
+
+export const fetchOrders = async (truckId?: string): Promise<DbOrder[] | null> => {
+  if (!isSupabaseConfigured()) return null;
+  try {
+    const supabase = getSupabaseClient();
+    let query = supabase
       .from('orders')
-      .select('id,customer,items,total,status,time,type,created_at,note,line_items')
-      .order('created_at', { ascending: false })
-      .limit(50);
+      .select('id,customer,items,total,status,time,type,created_at,note,line_items,truck_id');
+    
+    if (truckId) {
+      query = query.eq('truck_id', truckId);
+    }
+
+    const { data, error } = await query.order('created_at', { ascending: false }).limit(50);
 
     if (error || !data) return null;
     return data.map(normalizeOrder);
   } catch {
     return null;
+  }
+};
+
+export const fetchIngredients = async (): Promise<DbIngredient[] | null> => {
+  if (!isSupabaseConfigured()) return null;
+  try {
+    const supabase = getSupabaseClient();
+    const { data, error } = await supabase
+      .from('ingredients')
+      .select('id,name,category,unit,unit_cost,stock,image')
+      .order('name', { ascending: true });
+    if (error || !data) return null;
+    return data.map(normalizeIngredient);
+  } catch {
+    return null;
+  }
+};
+
+export const insertIngredient = async (ingredient: DbIngredient): Promise<DbIngredient | null> => {
+  if (!isSupabaseConfigured()) return null;
+  try {
+    const supabase = getSupabaseClient();
+    const payload = {
+      id: ingredient.id,
+      name: ingredient.name,
+      category: ingredient.category,
+      unit: ingredient.unit,
+      unit_cost: ingredient.unitCost,
+      stock: ingredient.stock,
+      image: ingredient.image,
+    };
+    const { data, error } = await supabase.from('ingredients').upsert(payload).select().single();
+    if (error || !data) return null;
+    return normalizeIngredient(data);
+  } catch {
+    return null;
+  }
+};
+
+export const deleteIngredient = async (ingredientId: string): Promise<boolean> => {
+  if (!isSupabaseConfigured()) return false;
+  try {
+    const supabase = getSupabaseClient();
+    const { error } = await supabase.from('ingredients').delete().eq('id', ingredientId);
+    return !error;
+  } catch {
+    return false;
   }
 };
 
@@ -218,6 +378,7 @@ export const insertOrder = async (order: DbOrder): Promise<DbOrder | null> => {
       note: order.note ?? null,
       line_items: order.lineItems ?? [],
       created_at: order.createdAt ? new Date(order.createdAt).toISOString() : new Date().toISOString(),
+      truck_id: order.truckId || null,
     };
     const { data, error } = await supabase.from('orders').insert(payload).select().single();
     if (error || !data) return null;
@@ -232,6 +393,61 @@ export const updateMenuItemStock = async (itemId: string, stock: number): Promis
   try {
     const supabase = getSupabaseClient();
     const { error } = await supabase.from('menu_items').update({ stock }).eq('id', itemId);
+    return !error;
+  } catch {
+    return false;
+  }
+};
+
+export const updateOrderStatus = async (orderId: string, status: DbOrder['status']): Promise<boolean> => {
+  if (!isSupabaseConfigured()) return false;
+  try {
+    const supabase = getSupabaseClient();
+    const { error } = await supabase.from('orders').update({ status }).eq('id', orderId);
+    return !error;
+  } catch {
+    return false;
+  }
+};
+
+export const fetchTrucks = async (): Promise<DbTruck[] | null> => {
+  if (!isSupabaseConfigured()) return null;
+  try {
+    const supabase = getSupabaseClient();
+    const { data, error } = await supabase
+      .from('trucks')
+      .select('*')
+      .order('name', { ascending: true });
+    if (error || !data) return null;
+    return data.map(normalizeTruck);
+  } catch {
+    return null;
+  }
+};
+
+export const upsertTruck = async (truck: DbTruck): Promise<DbTruck | null> => {
+  if (!isSupabaseConfigured()) return null;
+  try {
+    const supabase = getSupabaseClient();
+    const payload = {
+      id: truck.id,
+      name: truck.name,
+      location: truck.location,
+      is_active: truck.active,
+    };
+    const { data, error } = await supabase.from('trucks').upsert(payload).select().single();
+    if (error || !data) return null;
+    return normalizeTruck(data);
+  } catch {
+    return null;
+  }
+};
+
+export const deleteTruck = async (truckId: string): Promise<boolean> => {
+  if (!isSupabaseConfigured()) return false;
+  try {
+    const supabase = getSupabaseClient();
+    const { error } = await supabase.from('trucks').delete().eq('id', truckId);
     return !error;
   } catch {
     return false;
@@ -337,12 +553,14 @@ export const deleteStaffMember = async (staffId: string): Promise<boolean> => {
 export const subscribeToOpsRealtime = ({
   onMenuItemsChange,
   onOrdersChange,
+  onIngredientsChange,
   onStaffChange,
   onPermissionsChange,
   onStaffAccountsChange,
 }: {
   onMenuItemsChange: () => void;
   onOrdersChange: () => void;
+  onIngredientsChange?: () => void;
   onStaffChange?: () => void;
   onPermissionsChange?: () => void;
   onStaffAccountsChange?: () => void;
@@ -357,6 +575,9 @@ export const subscribeToOpsRealtime = ({
       })
       .on('postgres_changes', { event: '*', schema: 'public', table: 'orders' }, () => {
         onOrdersChange();
+      })
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'ingredients' }, () => {
+        onIngredientsChange?.();
       })
       .on('postgres_changes', { event: '*', schema: 'public', table: 'staff_members' }, () => {
         onStaffChange?.();

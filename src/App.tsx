@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState, useRef } from 'react';
 import { 
   LayoutDashboard, 
   Receipt, 
@@ -24,6 +24,9 @@ import {
   Sun,
   Menu,
   X,
+  Volume2,
+  VolumeX,
+  Camera,
 } from 'lucide-react';
 import { 
   BarChart, 
@@ -40,15 +43,21 @@ import { cn } from './lib/utils';
 import { checkSupabaseConnection, type SupabaseConnectionState } from './lib/supabase';
 import {
   deleteStaffMember,
+  deleteIngredient,
+  fetchIngredients,
   fetchMenuItems,
   fetchOrders,
   fetchStaffAccounts,
   fetchRolePermissions,
   fetchStaffMembers,
+  insertIngredient,
+  insertMenuItem,
   insertOrder,
   subscribeToOpsRealtime,
+  deleteMenuItem,
   updateMenuItemStock,
   updateStaffPassword,
+  uploadOpsImage,
   upsertStaffAccount,
   upsertRolePermission,
   upsertStaffMember,
@@ -56,9 +65,10 @@ import {
 
 // --- Types ---
 
-type View = 'dashboard' | 'orders' | 'menu' | 'kitchen' | 'settings' | 'login';
+type View = 'dashboard' | 'orders' | 'inventoryIngredients' | 'inventoryMenu' | 'kitchen' | 'settings' | 'login';
 type Language = 'en' | 'th';
 type ThemeMode = 'dark' | 'light';
+type CurrencyCode = 'THB' | 'JPY' | 'USD' | 'EUR';
 type StaffRole = 'Manager' | 'Server' | 'Kitchen';
 
 type RolePermission = {
@@ -81,6 +91,7 @@ interface MenuItem {
   sku: string;
   image: string;
   description: string;
+  active: boolean;
 }
 
 interface Order {
@@ -105,6 +116,7 @@ interface KitchenOrder {
   status: 'overdue' | 'delayed' | 'new';
   items: { name: string; qty: number; station: 'HOT' | 'COLD' }[];
   note?: string;
+  dbStatus: Order['status'];
 }
 
 interface StaffMember {
@@ -123,74 +135,106 @@ interface StaffAccount {
   active: boolean;
 }
 
+interface InventoryMovement {
+  id: string;
+  itemId: string;
+  itemName: string;
+  prevStock: number;
+  nextStock: number;
+  delta: number;
+  reason: string;
+  timestamp: number;
+}
+
+interface IngredientItem {
+  id: string;
+  name: string;
+  category: string;
+  unit: string;
+  unitCost: number;
+  stock: number;
+  image: string;
+}
+
+interface MenuRecipeLine {
+  ingredientId: string;
+  quantity: number;
+}
+
 // --- Mock Data ---
 
 const MENU_ITEMS: MenuItem[] = [
   {
     id: '1',
     name: 'Shibuya Shoyu',
-    category: 'Ramen',
+    category: 'อาหาร',
     price: 1200,
     cost: 450,
     stock: 45,
     sku: 'RAM-001',
     image: 'https://picsum.photos/seed/ramen/400/300',
-    description: '12-hour aged chicken & soy broth, handmade noodles'
+    description: '12-hour aged chicken & soy broth, handmade noodles',
+    active: true,
   },
   {
     id: '2',
     name: 'Truffle Croissant',
-    category: 'Pastries',
+    category: 'อาหาร',
     price: 850,
     cost: 320,
     stock: 12,
     sku: 'CRP-024',
     image: 'https://picsum.photos/seed/croissant/400/300',
-    description: 'AOP butter, black winter truffle, sea salt flake'
+    description: 'AOP butter, black winter truffle, sea salt flake',
+    active: true,
   },
   {
     id: '3',
     name: 'Miso Macarons (6pk)',
-    category: 'Pastries',
+    category: 'อาหาร',
     price: 1400,
     cost: 600,
     stock: 24,
     sku: 'CRP-025',
     image: 'https://picsum.photos/seed/macarons/400/300',
-    description: 'White miso ganache, toasted sesame, yuzu zest'
+    description: 'White miso ganache, toasted sesame, yuzu zest',
+    active: true,
   },
   {
     id: '4',
     name: 'Neon Gin Fizz',
-    category: 'Drinks',
+    category: 'เครื่องดื่ม',
     price: 1800,
     cost: 400,
     stock: 88,
     sku: 'DRK-102',
     image: 'https://picsum.photos/seed/cocktail/400/300',
-    description: 'Japanese Gin, lychee, sparkling elderflower'
+    description: 'Japanese Gin, lychee, sparkling elderflower',
+    active: true,
   },
   {
     id: '5',
     name: 'Wagyu Sando',
-    category: 'Tapas',
+    category: 'อาหาร',
     price: 3500,
     cost: 1500,
     stock: 8,
     sku: 'TAP-005',
     image: 'https://picsum.photos/seed/wagyu/400/300',
-    description: 'A5 Miyazaki Wagyu, honey mustard, milk bread'
+    description: 'A5 Miyazaki Wagyu, honey mustard, milk bread',
+    active: true,
   },
   {
     id: '6',
     name: 'Matcha Crepe',
-    category: 'Pastries',
+    category: 'อาหาร',
     price: 900,
     cost: 300,
     stock: 15,
     sku: 'CRP-026',
     image: 'https://picsum.photos/seed/matcha/400/300',
-    description: '20 layers of Uji matcha cream & delicate crepes'
+    description: '20 layers of Uji matcha cream & delicate crepes',
+    active: true,
   }
 ];
 
@@ -247,6 +291,24 @@ const STAFF_MEMBERS_MOCK: StaffMember[] = [
   { id: 's-4', name: 'Yuki Tanaka', role: 'Server', image: 'https://picsum.photos/seed/yuki/100/100', active: true },
 ];
 
+const INGREDIENTS_MOCK: IngredientItem[] = [
+  { id: 'ing-1', name: 'Miso Paste', category: 'Sauce', unit: 'kg', unitCost: 220, stock: 8, image: 'https://picsum.photos/seed/miso/300/300' },
+  { id: 'ing-2', name: 'Ramen Noodles', category: 'Noodles', unit: 'portion', unitCost: 45, stock: 120, image: 'https://picsum.photos/seed/noodles/300/300' },
+  { id: 'ing-3', name: 'Wagyu Slice', category: 'Meat', unit: 'portion', unitCost: 420, stock: 24, image: 'https://picsum.photos/seed/wagyu-ingredient/300/300' },
+  { id: 'ing-4', name: 'Truffle Oil', category: 'Oil', unit: 'ml', unitCost: 12, stock: 900, image: 'https://picsum.photos/seed/truffle-oil/300/300' },
+];
+
+const MENU_RECIPES_MOCK: Record<string, MenuRecipeLine[]> = {
+  '1': [
+    { ingredientId: 'ing-1', quantity: 0.08 },
+    { ingredientId: 'ing-2', quantity: 1 },
+  ],
+  '5': [
+    { ingredientId: 'ing-3', quantity: 1.2 },
+    { ingredientId: 'ing-4', quantity: 5 },
+  ],
+};
+
 const DEFAULT_PERMISSION_MATRIX: PermissionMatrix = {
   Manager: { dashboard: true, kitchen: true, pos: true, inventory: true, staff: true },
   Server: { dashboard: false, kitchen: false, pos: true, inventory: false, staff: false },
@@ -269,11 +331,16 @@ const SALES_DATA = [
   { time: '22:00', value: 30000 },
 ];
 
+const MENU_CATEGORY_OPTIONS = ['อาหาร', 'เครื่องดื่ม'];
+const INGREDIENT_CATEGORY_OPTIONS = ['Meat', 'Seafood', 'Vegetable', 'Sauce', 'Spice', 'Oil', 'Noodles', 'Dairy', 'Dry Goods', 'General'];
+
 const TEXT = {
   en: {
     dashboard: 'Dashboard',
     orders: 'Orders',
     menu: 'Inventory',
+    inventoryIngredients: 'Ingredients',
+    inventoryMenu: 'Menu Management',
     kitchen: 'Kitchen',
     settings: 'Staff & Permissions',
     support: 'Support',
@@ -317,6 +384,7 @@ const TEXT = {
     accessKey: 'Access Key',
     enterAtelier: 'Enter Atelier',
     language: 'Language',
+    currency: 'Currency',
     theme: 'Theme',
     dark: 'Dark',
     light: 'Light',
@@ -356,11 +424,72 @@ const TEXT = {
     saveNewPassword: 'Save New Password',
     login: 'Login',
     passwordUpdatedPleaseLogin: 'Password updated. Please login again',
+    inventorySummary: 'Inventory Summary',
+    totalSkus: 'Total SKUs',
+    totalUnits: 'Total Units',
+    lowStock: 'Low Stock',
+    outOfStock: 'Out of Stock',
+    inventoryValue: 'Inventory Value',
+    filterAll: 'All',
+    filterLow: 'Low',
+    filterOut: 'Out',
+    movementHistory: 'Stock Movements',
+    noMovement: 'No stock movement yet',
+    noItemsFound: 'No items found',
+    quickAdd5: '+5',
+    quickMinus5: '-5',
+    restock: 'Restock',
+    consume: 'Usage',
+    addMenuItem: 'Add Menu',
+    menuName: 'Menu name',
+    imageUrl: 'Image URL',
+    uploadImage: 'Upload Image',
+    fieldHintName: 'Enter ingredient name (e.g. Truffle Oil)',
+    fieldHintImage: 'Upload ingredient photo (JPG/PNG)',
+    fieldHintCategory: 'Choose ingredient category',
+    fieldHintStock: 'Enter remaining quantity (number)',
+    fieldHintCost: 'Enter cost per unit',
+    menuFieldHintName: 'Enter menu name (e.g. Wagyu Sando)',
+    menuFieldHintCategory: 'Choose menu category',
+    menuFieldHintImage: 'Upload menu photo (JPG/PNG)',
+    menuFieldHintStock: 'Enter starting stock (number)',
+    menuFieldHintCost: 'Enter cost per menu',
+    menuFieldHintPrice: 'Enter sale price per menu',
+    menuFieldHintDesc: 'Short description for staff/pos',
+    ingredientName: 'Ingredient name',
+    ingredientUnit: 'Unit',
+    ingredientUnitCost: 'Unit cost',
+    ingredientStock: 'Ingredient stock',
+    addIngredient: 'Add Ingredient',
+    recipeBuilder: 'Recipe Builder',
+    selectMenu: 'Select menu',
+    selectIngredient: 'Select ingredient',
+    quantity: 'Quantity',
+    addToRecipe: 'Add to Recipe',
+    uploading: 'Uploading...',
+    recipeItems: 'Recipe Items',
+    lineCost: 'Line cost',
+    recipeCost: 'Recipe cost',
+    margin: 'Margin',
+    statusAvailable: 'Available',
+    statusLow: 'Low',
+    statusOut: 'Out',
+    soundToggle: 'Kitchen Notifications',
+    soundOn: 'Sound ON',
+    soundOff: 'Sound OFF',
+    logout: 'Logout',
+    profile: 'Profile',
+    notifications: 'Notifications',
+    noNotifications: 'No notifications',
+    recentActivity: 'Recent Activity',
+    changePhoto: 'Change Photo',
   },
   th: {
     dashboard: 'แดชบอร์ด',
     orders: 'ออเดอร์',
     menu: 'สต็อกสินค้า',
+    inventoryIngredients: 'วัตถุดิบ',
+    inventoryMenu: 'จัดการเมนู',
     kitchen: 'ครัว',
     settings: 'พนักงานและสิทธิ์',
     support: 'ช่วยเหลือ',
@@ -390,7 +519,7 @@ const TEXT = {
     submitOrder: 'ส่งออเดอร์',
     submitting: 'กำลังส่ง...',
     inventoryControl: 'ควบคุมสต็อก',
-    atelierStock: 'สต็อกของร้าน',
+    atelierStock: 'เมนูของร้าน',
     searchProducts: 'ค้นหาสินค้า...',
     addProduct: 'เพิ่มสินค้า',
     product: 'สินค้า',
@@ -404,6 +533,7 @@ const TEXT = {
     accessKey: 'รหัสผ่าน',
     enterAtelier: 'เข้าสู่ระบบ',
     language: 'ภาษา',
+    currency: 'สกุลเงิน',
     theme: 'ธีม',
     dark: 'เข้ม',
     light: 'สว่าง',
@@ -443,40 +573,112 @@ const TEXT = {
     saveNewPassword: 'บันทึกรหัสผ่านใหม่',
     login: 'เข้าสู่ระบบ',
     passwordUpdatedPleaseLogin: 'เปลี่ยนรหัสผ่านเรียบร้อย กรุณาเข้าสู่ระบบอีกครั้ง',
+    inventorySummary: 'สรุปสต็อก',
+    totalSkus: 'จำนวน SKU',
+    totalUnits: 'จำนวนชิ้นรวม',
+    lowStock: 'ใกล้หมด',
+    outOfStock: 'หมดสต็อก',
+    inventoryValue: 'มูลค่าสต็อก',
+    filterAll: 'ทั้งหมด',
+    filterLow: 'ใกล้หมด',
+    filterOut: 'หมด',
+    movementHistory: 'ประวัติการปรับสต็อก',
+    noMovement: 'ยังไม่มีการปรับสต็อก',
+    noItemsFound: 'ไม่พบรายการสินค้า',
+    quickAdd5: '+5',
+    quickMinus5: '-5',
+    restock: 'เติมสต็อก',
+    consume: 'ตัดสต็อก',
+    addMenuItem: 'เพิ่มเมนู',
+    menuName: 'ชื่อเมนู',
+    imageUrl: 'ลิงก์รูปภาพ',
+    uploadImage: 'อัปโหลดรูป',
+    fieldHintName: 'ใส่ชื่อวัตถุดิบ (เช่น Truffle Oil)',
+    fieldHintImage: 'อัปโหลดรูปวัตถุดิบ (JPG/PNG)',
+    fieldHintCategory: 'เลือกหมวดหมู่วัตถุดิบ',
+    fieldHintStock: 'ใส่จำนวนคงเหลือ (ตัวเลข)',
+    fieldHintCost: 'ใส่ต้นทุนต่อหน่วย',
+    menuFieldHintName: 'ใส่ชื่อเมนู (เช่น Wagyu Sando)',
+    menuFieldHintCategory: 'เลือกหมวดหมู่เมนู',
+    menuFieldHintImage: 'อัปโหลดรูปเมนู (JPG/PNG)',
+    menuFieldHintStock: 'ใส่จำนวนเริ่มต้น (ตัวเลข)',
+    menuFieldHintCost: 'ใส่ต้นทุนต่อเมนู',
+    menuFieldHintPrice: 'ใส่ราคาขายต่อเมนู',
+    menuFieldHintDesc: 'คำอธิบายสั้นๆ สำหรับพนักงาน/หน้าขาย',
+    ingredientName: 'ชื่อวัตถุดิบ',
+    ingredientUnit: 'หน่วย',
+    ingredientUnitCost: 'ราคาต่อหน่วย',
+    ingredientStock: 'คงเหลือวัตถุดิบ',
+    addIngredient: 'เพิ่มวัตถุดิบ',
+    recipeBuilder: 'จัดสูตรเมนู',
+    selectMenu: 'เลือกเมนู',
+    selectIngredient: 'เลือกวัตถุดิบ',
+    quantity: 'ปริมาณ',
+    addToRecipe: 'เพิ่มเข้าสูตร',
+    uploading: 'กำลังอัปโหลด...',
+    recipeItems: 'รายการวัตถุดิบในเมนู',
+    lineCost: 'ต้นทุนรายการ',
+    recipeCost: 'ต้นทุนสูตร',
+    margin: 'กำไรขั้นต้น',
+    statusAvailable: 'พร้อมขาย',
+    statusLow: 'ใกล้หมด',
+    statusOut: 'หมด',
+    soundToggle: 'แจ้งเตือนด้วยเสียงในครัว',
+    soundOn: 'เปิดเสียง',
+    soundOff: 'ปิดเสียง',
+    logout: 'ออกจากระบบ',
+    profile: 'โปรไฟล์',
+    notifications: 'การแจ้งเตือน',
+    noNotifications: 'ไม่มีการแจ้งเตือน',
+    recentActivity: 'กิจกรรมล่าสุด',
+    changePhoto: 'เปลี่ยนรูป',
   },
 } as const;
 
 const formatNowTime = (date = new Date()) =>
   `${String(date.getHours()).padStart(2, '0')}:${String(date.getMinutes()).padStart(2, '0')}`;
 
+const formatCurrencyAmount = (value: number, currency: CurrencyCode, language: Language) => {
+  const locale = language === 'th' ? 'th-TH' : 'en-US';
+  return new Intl.NumberFormat(locale, {
+    style: 'currency',
+    currency,
+    maximumFractionDigits: 0,
+  }).format(value);
+};
+
 const toKitchenOrders = (orders: Order[]): KitchenOrder[] =>
-  orders.slice(0, 9).map((order) => {
-    const elapsedMinutes = order.createdAt
-      ? Math.max(1, Math.floor((Date.now() - order.createdAt) / 60000))
-      : 8;
-    const est = 15;
-    const status: KitchenOrder['status'] =
-      elapsedMinutes > est + 5 ? 'overdue' : elapsedMinutes > est ? 'delayed' : 'new';
+  orders
+    .filter((order) => order.status === 'new' || order.status === 'preparing')
+    .slice(0, 20)
+    .map((order) => {
+      const elapsedMinutes = order.createdAt
+        ? Math.max(1, Math.floor((Date.now() - order.createdAt) / 60000))
+        : 8;
+      const est = 15;
+      const status: KitchenOrder['status'] =
+        elapsedMinutes > est + 5 ? 'overdue' : elapsedMinutes > est ? 'delayed' : 'new';
 
-    const fallbackItems =
-      order.items
-        ?.split(',')
-        .map((part) => part.trim())
-        .filter(Boolean)
-        .slice(0, 3)
-        .map((part) => ({ name: part, qty: 1, station: 'HOT' as const })) ?? [];
+      const fallbackItems =
+        order.items
+          ?.split(',')
+          .map((part) => part.trim())
+          .filter(Boolean)
+          .slice(0, 3)
+          .map((part) => ({ name: part, qty: 1, station: 'HOT' as const })) ?? [];
 
-    return {
-      id: order.id.startsWith('#') ? order.id : `#${order.id}`,
-      customer: order.customer,
-      type: order.type === 'takeout' ? 'takeout' : 'dine-in',
-      elapsed: `${elapsedMinutes}m`,
-      est: `${est}m`,
-      status,
-      items: order.lineItems?.length ? order.lineItems : fallbackItems,
-      note: order.note,
-    };
-  });
+      return {
+        id: order.id.startsWith('#') ? order.id : `#${order.id}`,
+        customer: order.customer,
+        type: order.type === 'takeout' ? 'takeout' : 'dine-in',
+        elapsed: `${elapsedMinutes}m`,
+        est: `${est}m`,
+        status,
+        items: order.lineItems?.length ? order.lineItems : fallbackItems,
+        note: order.note,
+        dbStatus: order.status,
+      };
+    });
 
 // --- Components ---
 
@@ -496,7 +698,8 @@ const Sidebar = ({
   const menuItems = [
     { id: 'dashboard', label: labels.dashboard, icon: LayoutDashboard },
     { id: 'orders', label: labels.orders, icon: Receipt },
-    { id: 'menu', label: labels.menu, icon: UtensilsCrossed },
+    { id: 'inventoryIngredients', label: labels.inventoryIngredients, icon: ShoppingBag },
+    { id: 'inventoryMenu', label: labels.inventoryMenu, icon: UtensilsCrossed },
     { id: 'kitchen', label: labels.kitchen, icon: ChefHat },
     { id: 'settings', label: labels.settings, icon: Settings },
   ];
@@ -560,9 +763,17 @@ const TopBar = ({
   labels,
   language,
   onToggleLanguage,
+  currency,
+  onChangeCurrency,
   theme,
   onToggleTheme,
   onOpenMobileMenu,
+  trucks,
+  currentTruckId,
+  onTruckChange,
+  currentUser,
+  onLogout,
+  onUpdateUserImage,
 }: {
   title: string;
   subtitle?: React.ReactNode;
@@ -570,10 +781,29 @@ const TopBar = ({
   labels: typeof TEXT.en;
   language: Language;
   onToggleLanguage: () => void;
+  currency: CurrencyCode;
+  onChangeCurrency: (currency: CurrencyCode) => void;
   theme: ThemeMode;
   onToggleTheme: () => void;
   onOpenMobileMenu: () => void;
+  trucks: Truck[];
+  currentTruckId: string | null;
+  onTruckChange: (id: string | null) => void;
+  currentUser: StaffMember | null;
+  onLogout: () => void;
+  onUpdateUserImage: (file: File) => void;
 }) => {
+  const [activeMenu, setActiveMenu] = useState<'notifications' | 'profile' | null>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    const handleOutsideClick = () => setActiveMenu(null);
+    if (activeMenu) {
+      window.addEventListener('click', handleOutsideClick);
+    }
+    return () => window.removeEventListener('click', handleOutsideClick);
+  }, [activeMenu]);
+
   const statusLabel =
     supabaseStatus === 'connected'
       ? labels.supabaseConnected
@@ -620,6 +850,17 @@ const TopBar = ({
           <Globe className="w-4 h-4" />
           {language.toUpperCase()}
         </button>
+        <select
+          className="px-3 py-2 rounded-sm bg-surface-high text-on-surface text-xs font-bold uppercase tracking-wider outline-none"
+          title={labels.currency}
+          value={currency}
+          onChange={(event) => onChangeCurrency(event.target.value as CurrencyCode)}
+        >
+          <option value="THB">THB</option>
+          <option value="JPY">JPY</option>
+          <option value="USD">USD</option>
+          <option value="EUR">EUR</option>
+        </select>
         <button
           onClick={onToggleTheme}
           className="px-3 py-2 rounded-sm bg-surface-high text-on-surface text-xs font-bold uppercase tracking-wider flex items-center gap-2"
@@ -628,24 +869,115 @@ const TopBar = ({
           {theme === 'dark' ? <Moon className="w-4 h-4" /> : <Sun className="w-4 h-4" />}
           {theme === 'dark' ? labels.dark : labels.light}
         </button>
-        <button className="hidden md:block bg-neon-gradient text-on-primary-fixed px-6 py-2 rounded-sm font-headline font-bold text-sm hover:opacity-90 active:scale-95 transition-all">
-          {labels.newOrder}
-        </button>
-        <div className="flex items-center gap-2">
-          <button className="p-2 text-on-surface/60 hover:bg-surface-high rounded-sm transition-colors">
+        <select
+          className="bg-surface-high text-on-surface text-xs font-bold uppercase tracking-wider px-4 py-2 rounded-sm outline-none border border-outline-variant/10 min-w-[200px]"
+          value={currentTruckId || ''}
+          onChange={(e) => onTruckChange(e.target.value)}
+        >
+          {trucks.map(truck => (
+            <option key={truck.id} value={truck.id}>
+              {truck.name} {truck.location ? `• ${truck.location}` : ''}
+            </option>
+          ))}
+          {trucks.length === 0 && <option value="">No Trucks Found</option>}
+        </select>
+        <div className="flex items-center gap-2 relative">
+          <button 
+            onClick={(e) => { e.stopPropagation(); setActiveMenu(prev => prev === 'notifications' ? null : 'notifications'); }}
+            className={cn("p-2 rounded-sm transition-colors", activeMenu === 'notifications' ? "bg-primary/20 text-primary" : "text-on-surface/60 hover:bg-surface-high")}
+          >
             <Bell className="w-5 h-5" />
           </button>
-          <button className="p-2 text-on-surface/60 hover:bg-surface-high rounded-sm transition-colors">
-            <User className="w-5 h-5" />
-          </button>
-        </div>
-        <div className="w-8 h-8 rounded-full overflow-hidden border border-outline-variant/30">
-          <img 
-            src="https://picsum.photos/seed/manager/100/100" 
-            alt="Manager" 
-            className="w-full h-full object-cover"
-            referrerPolicy="no-referrer"
-          />
+          
+          <div className="flex items-center gap-3 ml-2 group cursor-pointer" onClick={(e) => { e.stopPropagation(); setActiveMenu(prev => prev === 'profile' ? null : 'profile'); }}>
+            <div className="hidden md:block text-right">
+               <p className="text-[10px] font-black uppercase tracking-widest text-on-surface leading-tight">{currentUser?.name || 'Manager'}</p>
+               <p className="text-[9px] font-mono text-on-surface/40 uppercase tracking-tighter">{currentUser?.role || 'Admin'}</p>
+            </div>
+            <div className={cn("w-8 h-8 rounded-full overflow-hidden border transition-all", activeMenu === 'profile' ? "border-primary shadow-[0_0_10px_rgba(255,82,92,0.3)]" : "border-outline-variant/30")}>
+              <img 
+                src={currentUser?.image || "https://picsum.photos/seed/manager/100/100"} 
+                alt={currentUser?.name || "Manager"} 
+                className="w-full h-full object-cover"
+                referrerPolicy="no-referrer"
+              />
+            </div>
+          </div>
+
+          {/* Dropdowns */}
+          <AnimatePresence>
+            {activeMenu === 'notifications' && (
+              <motion.div 
+                initial={{ opacity: 0, scale: 0.95, y: 10 }}
+                animate={{ opacity: 1, scale: 1, y: 0 }}
+                exit={{ opacity: 0, scale: 0.95, y: 10 }}
+                className="absolute top-full right-0 mt-4 w-80 bg-surface-low border border-outline-variant/20 shadow-2xl rounded-sm overflow-hidden z-50 backdrop-blur-xl"
+                onClick={e => e.stopPropagation()}
+              >
+                <div className="p-4 border-b border-outline-variant/10 bg-surface-high/50">
+                  <h4 className="font-headline font-black text-xs uppercase tracking-widest flex items-center gap-2">
+                    <Bell className="w-3 h-3 text-primary" />
+                    {labels.notifications}
+                  </h4>
+                </div>
+                <div className="max-h-[300px] overflow-y-auto custom-scrollbar p-2">
+                  <div className="py-8 text-center opacity-20 flex flex-col items-center">
+                    <Info className="w-8 h-8 mb-2" />
+                    <p className="text-[10px] uppercase font-mono tracking-widest">{labels.noNotifications}</p>
+                  </div>
+                </div>
+              </motion.div>
+            )}
+
+            {activeMenu === 'profile' && (
+              <motion.div 
+                initial={{ opacity: 0, scale: 0.95, y: 10 }}
+                animate={{ opacity: 1, scale: 1, y: 0 }}
+                exit={{ opacity: 0, scale: 0.95, y: 10 }}
+                className="absolute top-full right-0 mt-4 w-56 bg-surface-low border border-outline-variant/20 shadow-2xl rounded-sm overflow-hidden z-50 backdrop-blur-xl"
+                onClick={e => e.stopPropagation()}
+              >
+                <div className="p-4 border-b border-outline-variant/10 bg-surface-high/50 md:hidden">
+                  <p className="text-xs font-bold">{currentUser?.name}</p>
+                  <p className="text-[10px] text-on-surface/50">{currentUser?.role}</p>
+                </div>
+                <div className="p-2 space-y-1">
+                  <input
+                    type="file"
+                    ref={fileInputRef}
+                    className="hidden"
+                    accept="image/*"
+                    onChange={(e) => {
+                      const file = e.target.files?.[0];
+                      if (file) {
+                        onUpdateUserImage(file);
+                        setActiveMenu(null);
+                      }
+                    }}
+                  />
+                  <button 
+                    onClick={() => fileInputRef.current?.click()}
+                    className="w-full text-left px-4 py-3 text-[10px] font-black uppercase tracking-widest hover:bg-primary/10 hover:text-primary transition-colors flex items-center gap-3"
+                  >
+                    <Camera className="w-4 h-4" />
+                    {labels.changePhoto}
+                  </button>
+                  <button className="w-full text-left px-4 py-3 text-[10px] font-black uppercase tracking-widest hover:bg-primary/10 hover:text-primary transition-colors flex items-center gap-3">
+                    <User className="w-4 h-4" />
+                    {labels.profile}
+                  </button>
+                  <div className="h-[1px] bg-outline-variant/10 mx-2 my-1"></div>
+                  <button 
+                    onClick={onLogout}
+                    className="w-full text-left px-4 py-3 text-[10px] font-black uppercase tracking-widest text-error hover:bg-error/10 transition-colors flex items-center gap-3"
+                  >
+                    <LogOut className="w-4 h-4" />
+                    {labels.logout}
+                  </button>
+                </div>
+              </motion.div>
+            )}
+          </AnimatePresence>
         </div>
       </div>
     </header>
@@ -664,14 +996,15 @@ const MobileBottomNav = ({
   const items = [
     { id: 'dashboard' as const, label: labels.dashboard, icon: LayoutDashboard },
     { id: 'orders' as const, label: labels.orders, icon: Receipt },
-    { id: 'menu' as const, label: labels.menu, icon: UtensilsCrossed },
+    { id: 'inventoryIngredients' as const, label: labels.inventoryIngredients, icon: ShoppingBag },
+    { id: 'inventoryMenu' as const, label: labels.inventoryMenu, icon: UtensilsCrossed },
     { id: 'kitchen' as const, label: labels.kitchen, icon: ChefHat },
     { id: 'settings' as const, label: labels.settings, icon: Settings },
   ];
 
   return (
     <nav className="lg:hidden fixed bottom-0 left-0 right-0 z-40 bg-surface-low/95 backdrop-blur-md border-t border-outline-variant/20 px-2 py-2">
-      <div className="grid grid-cols-5 gap-1">
+      <div className="grid grid-cols-6 gap-1">
         {items.map((item) => (
           <button
             key={item.id}
@@ -692,87 +1025,172 @@ const MobileBottomNav = ({
 
 // --- Views ---
 
+const OrderDetailsModal = ({ order, onClose, labels, formatMoney }: { order: Order; onClose: () => void; labels: typeof TEXT.en; formatMoney: (v: number) => string }) => {
+  return (
+    <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-background/80 backdrop-blur-md animate-in fade-in duration-300">
+      <div className="bg-surface-low border border-outline-variant/20 rounded-sm w-full max-w-lg shadow-2xl overflow-hidden animate-in zoom-in-95 duration-300">
+        <div className="p-6 border-b border-outline-variant/10 flex justify-between items-start">
+          <div>
+            <span className="font-mono text-[10px] text-primary font-bold uppercase tracking-widest leading-none block mb-1">Receipt Transaction</span>
+            <h2 className="font-headline text-2xl font-black italic tracking-tighter uppercase">{order.id}</h2>
+          </div>
+          <button onClick={onClose} className="p-2 hover:bg-surface-high rounded-full transition-colors">
+            <X className="w-5 h-5 text-on-surface/40" />
+          </button>
+        </div>
+        
+        <div className="p-8 space-y-6">
+          <div className="grid grid-cols-2 gap-4">
+            <div>
+              <p className="text-[10px] uppercase tracking-widest text-on-surface/40 font-bold mb-1">{labels.customerName}</p>
+              <p className="text-sm font-bold">{order.customer}</p>
+            </div>
+            <div className="text-right">
+              <p className="text-[10px] uppercase tracking-widest text-on-surface/40 font-bold mb-1">{labels.status}</p>
+              <span className={cn(
+                "px-2 py-0.5 rounded-full text-[10px] font-black uppercase tracking-tighter italic",
+                order.status === 'delivered' ? "bg-secondary/20 text-secondary" : "bg-primary/20 text-primary"
+              )}>{order.status}</span>
+            </div>
+          </div>
+
+          <div className="space-y-3">
+            <p className="text-[10px] uppercase tracking-widest text-on-surface/40 font-bold border-b border-outline-variant/10 pb-2">{labels.recipeItems}</p>
+            {order.lineItems?.map((item, idx) => (
+              <div key={idx} className="flex justify-between items-center py-1">
+                <div className="flex items-center gap-3">
+                  <span className="font-mono text-xs font-bold text-primary">{item.qty}x</span>
+                  <span className="text-sm font-bold uppercase tracking-tight">{item.name}</span>
+                </div>
+                <span className="font-mono text-xs text-on-surface/60">{item.station}</span>
+              </div>
+            ))}
+          </div>
+
+          {order.note && (
+            <div className="bg-background/40 p-3 rounded-sm border-l-2 border-secondary italic text-xs text-on-surface/70">
+              "{order.note}"
+            </div>
+          )}
+
+          <div className="pt-6 border-t border-outline-variant/10 flex justify-between items-center">
+            <span className="font-headline font-black text-lg uppercase italic tracking-widest text-primary">{labels.total}</span>
+            <span className="font-headline font-black text-3xl italic tracking-tighter text-secondary">{formatMoney(order.total)}</span>
+          </div>
+        </div>
+
+        <div className="p-4 bg-background/60 text-center">
+          <p className="text-[8px] font-mono text-on-surface/30 uppercase tracking-[0.4em]">{new Date(order.createdAt || 0).toLocaleString()}</p>
+        </div>
+      </div>
+    </div>
+  );
+};
+
 const DashboardView = ({
   orders,
   menuItems,
   labels,
+  formatMoney,
+  onViewHistory,
 }: {
   orders: Order[];
   menuItems: MenuItem[];
   labels: typeof TEXT.en;
+  formatMoney: (value: number) => string;
+  onViewHistory: () => void;
 }) => {
+  const [selectedOrder, setSelectedOrder] = useState<Order | null>(null);
+
   const newCount = orders.filter((order) => order.status === 'new').length;
   const preparingCount = orders.filter((order) => order.status === 'preparing').length;
   const deliveredCount = orders.filter((order) => order.status === 'delivered').length;
   const totalRevenue = orders.reduce((sum, order) => sum + order.total, 0);
   const averageOrder = orders.length ? Math.round(totalRevenue / orders.length) : 0;
-  const lowStockItems = menuItems.filter((item) => item.stock <= 10).slice(0, 2);
-  const topTwoRecent = orders.slice(0, 3);
+  const lowStockItems = menuItems.filter((item) => item.stock <= 10).slice(0, 3);
+  const recentOrders = orders.slice(0, 5);
+
+  const realSalesData = useMemo(() => {
+    // Group orders by hour for the last 12 hours
+    const data: { [key: string]: number } = {};
+    const now = Date.now();
+    for (let i = 0; i < 12; i++) {
+      const hourDate = new Date(now - (11 - i) * 3600000);
+      const hourKey = hourDate.getHours() + ':00';
+      data[hourKey] = 0;
+    }
+
+    orders.forEach((order) => {
+      const orderDate = new Date(order.createdAt || 0);
+      const hourKey = orderDate.getHours() + ':00';
+      if (data[hourKey] !== undefined) {
+        data[hourKey] += order.total;
+      }
+    });
+
+    return Object.entries(data).map(([time, value]) => ({ time, value }));
+  }, [orders]);
 
   return (
     <div className="space-y-8 animate-in fade-in duration-500">
       <div className="mx-0 order-ticker py-2 px-6 flex items-center justify-between rounded-sm bg-secondary/20 text-secondary border border-secondary/30">
         <div className="flex items-center gap-4">
-          <span className="font-mono font-bold text-sm tracking-tighter">LIVE STATUS</span>
+          <span className="font-mono font-bold text-sm tracking-tighter uppercase">Operations Hub</span>
           <div className="flex gap-4 text-xs font-medium">
             <span className="flex items-center gap-1"><span className="w-2 h-2 bg-secondary rounded-full"></span> {newCount} {labels.status}</span>
-            <span className="flex items-center gap-1"><span className="w-2 h-2 bg-secondary/50 rounded-full"></span> {preparingCount} {labels.orders}</span>
+            <span className="flex items-center gap-1"><span className="w-2 h-2 bg-secondary/50 rounded-full"></span> {preparingCount} Processing</span>
           </div>
         </div>
-        <div className="font-mono text-sm font-bold">14:32:05 PM</div>
+        <div className="font-mono text-sm font-bold uppercase">{new Date().toLocaleTimeString()}</div>
       </div>
 
       <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-        <div className="bg-surface-low p-6 relative overflow-hidden group rounded-sm">
+        <div className="bg-surface-low p-6 relative overflow-hidden group rounded-sm border border-outline-variant/10">
           <TrendingUp className="absolute top-0 right-0 p-4 w-24 h-24 text-primary opacity-5 group-hover:opacity-10 transition-opacity" />
           <div className="relative z-10">
             <p className="font-mono text-primary text-xs font-bold uppercase tracking-[0.2em] mb-1">{labels.total}</p>
-            <h3 className="font-headline text-4xl font-black text-on-surface tracking-tighter">¥{totalRevenue.toLocaleString()}</h3>
+            <h3 className="font-headline text-4xl font-black text-on-surface tracking-tighter drop-shadow-[0_0_15px_rgba(255,82,92,0.1)]">{formatMoney(totalRevenue)}</h3>
             <div className="mt-4 flex items-center gap-2 text-xs font-medium text-secondary">
               <TrendingUp className="w-4 h-4" />
-              <span>+12.5% from yesterday</span>
+              <span>Real Volume</span>
             </div>
           </div>
         </div>
-        <div className="bg-surface-low p-6 relative overflow-hidden group rounded-sm">
+        <div className="bg-surface-low p-6 relative overflow-hidden group rounded-sm border border-outline-variant/10">
           <ShoppingBag className="absolute top-0 right-0 p-4 w-24 h-24 text-primary opacity-5 group-hover:opacity-10 transition-opacity" />
           <div className="relative z-10">
             <p className="font-mono text-primary text-xs font-bold uppercase tracking-[0.2em] mb-1">{labels.orders}</p>
-            <h3 className="font-headline text-4xl font-black text-on-surface tracking-tighter">{orders.length}</h3>
+            <h3 className="font-headline text-4xl font-black text-on-surface tracking-tighter drop-shadow-[0_0_15px_rgba(255,82,92,0.1)]">{orders.length}</h3>
             <div className="mt-4 flex items-center gap-2 text-xs font-medium text-primary">
               <Clock className="w-4 h-4" />
-              <span>Avg 12 orders / hour</span>
+              <span>Active Pulse</span>
             </div>
           </div>
         </div>
-        <div className="bg-surface-low p-6 relative overflow-hidden group rounded-sm">
+        <div className="bg-surface-low p-6 relative overflow-hidden group rounded-sm border border-outline-variant/10">
           <Receipt className="absolute top-0 right-0 p-4 w-24 h-24 text-primary opacity-5 group-hover:opacity-10 transition-opacity" />
           <div className="relative z-10">
-            <p className="font-mono text-primary text-xs font-bold uppercase tracking-[0.2em] mb-1">Avg Order Value</p>
-            <h3 className="font-headline text-4xl font-black text-on-surface tracking-tighter">¥{averageOrder.toLocaleString()}</h3>
+            <p className="font-mono text-primary text-xs font-bold uppercase tracking-[0.2em] mb-1">Avg Ticket</p>
+            <h3 className="font-headline text-4xl font-black text-on-surface tracking-tighter drop-shadow-[0_0_15px_rgba(255,82,92,0.1)]">{formatMoney(averageOrder)}</h3>
             <div className="mt-4 flex items-center gap-2 text-xs font-medium text-on-surface/40">
               <Info className="w-4 h-4" />
-              <span>Highest: ¥8,400 (Group)</span>
+              <span>Live Efficiency</span>
             </div>
           </div>
         </div>
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
-        <div className="lg:col-span-2 bg-surface-low p-8 rounded-sm">
+        <div className="lg:col-span-2 bg-surface-low p-8 rounded-sm border border-outline-variant/10">
           <div className="flex justify-between items-end mb-10">
             <div>
-              <h2 className="font-headline text-2xl font-bold tracking-tight mb-2">Sales Velocity</h2>
-              <p className="text-on-surface/60 text-sm">Performance tracking for the last 24 hours</p>
-            </div>
-            <div className="flex gap-2">
-              <button className="px-4 py-1.5 text-xs font-bold bg-primary text-on-primary-fixed rounded-full">Daily</button>
-              <button className="px-4 py-1.5 text-xs font-bold bg-surface-highest text-on-surface rounded-full">Weekly</button>
+              <h2 className="font-headline text-2xl font-black uppercase tracking-tight italic mb-2">Sales Velocity</h2>
+              <p className="text-on-surface/60 text-[10px] font-bold uppercase tracking-widest font-mono">Real-time throughput (Last 12 hours)</p>
             </div>
           </div>
           <div className="h-64 w-full">
             <ResponsiveContainer width="100%" height="100%">
-              <BarChart data={SALES_DATA}>
+              <BarChart data={realSalesData}>
                 <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#2a2a2a" />
                 <XAxis 
                   dataKey="time" 
@@ -781,12 +1199,13 @@ const DashboardView = ({
                   tick={{ fill: '#e5e2e1', opacity: 0.4, fontSize: 10, fontFamily: 'Space Grotesk' }}
                 />
                 <Tooltip 
-                  cursor={{ fill: '#2a2a2a' }}
-                  contentStyle={{ backgroundColor: '#1c1b1b', border: 'none', borderRadius: '2px', color: '#e5e2e1' }}
+                  cursor={{ fill: 'rgba(255,82,92,0.1)' }}
+                  contentStyle={{ backgroundColor: '#1c1b1b', border: '1px solid #2a2a2a', borderRadius: '2px', color: '#e5e2e1' }}
+                  formatter={(value: number) => [formatMoney(value), 'Revenue']}
                 />
                 <Bar dataKey="value" radius={[2, 2, 0, 0]}>
-                  {SALES_DATA.map((entry, index) => (
-                    <Cell key={`cell-${index}`} fill={entry.value > 60000 ? '#ff525c' : '#353534'} />
+                  {realSalesData.map((entry, index) => (
+                    <Cell key={`cell-${index}`} fill={entry.value > 0 ? '#ff525c' : '#353534'} />
                   ))}
                 </Bar>
               </BarChart>
@@ -794,94 +1213,242 @@ const DashboardView = ({
           </div>
         </div>
 
-        <div className="bg-surface-low p-8 rounded-sm flex flex-col">
-          <h2 className="font-headline text-2xl font-bold tracking-tight mb-6">{labels.menu}</h2>
-          <div className="space-y-6 flex-1">
+        <div className="bg-surface-low p-8 rounded-sm border border-outline-variant/10 flex flex-col shadow-inner">
+          <h2 className="font-headline text-2xl font-black uppercase tracking-tight italic mb-6">Inventory Health</h2>
+          <div className="space-y-6 flex-1 max-h-[220px] overflow-y-auto custom-scrollbar pr-2">
             {lowStockItems.map((item) => (
-              <div key={item.id} className="flex items-center justify-between group">
+              <div key={item.id} className="flex items-center justify-between group p-2 hover:bg-background/20 rounded-sm transition-colors border-l-2 border-transparent hover:border-secondary">
                 <div className="flex items-center gap-4">
-                  <div className="w-12 h-12 rounded-sm bg-surface-highest overflow-hidden">
-                    <img src={item.image} alt={item.name} className="w-full h-full object-cover opacity-80" referrerPolicy="no-referrer" />
+                  <div className="w-10 h-10 rounded-sm bg-surface-highest overflow-hidden border border-outline-variant/10">
+                    <img src={item.image} alt={item.name} className="w-full h-full object-cover" referrerPolicy="no-referrer" />
                   </div>
                   <div>
-                    <p className="text-sm font-bold">{item.name}</p>
-                    <p className={cn('text-xs font-medium', item.stock <= 3 ? 'text-error' : 'text-secondary')}>
-                      {item.stock <= 3 ? `Critical: ${item.stock} left` : `Low Stock: ${item.stock} units`}
+                    <p className="text-xs font-bold uppercase tracking-tight">{item.name}</p>
+                    <p className={cn('text-[10px] font-black uppercase tracking-tighter', item.stock <= 3 ? 'text-error' : 'text-secondary')}>
+                      {item.stock} LEFT
                     </p>
                   </div>
                 </div>
-                <button className={cn('p-2 transition-colors rounded-sm', item.stock <= 3 ? 'hover:bg-error/10 text-error' : 'hover:bg-secondary/10 text-secondary')}>
-                  <ShoppingCart className="w-4 h-4" />
-                </button>
               </div>
             ))}
             {lowStockItems.length === 0 && (
-              <p className="text-xs text-on-surface/60">Inventory is healthy. No alerts right now.</p>
+              <div className="flex flex-col items-center justify-center py-10 opacity-20">
+                <ChefHat className="w-10 h-10 mb-2" />
+                <p className="text-[10px] font-black uppercase tracking-widest text-center">Stable Ops</p>
+              </div>
             )}
           </div>
-          <button className="w-full mt-8 py-3 text-xs font-bold tracking-[0.2em] uppercase border border-outline-variant/30 hover:border-primary/50 transition-all text-on-surface/80">
-            View Full Inventory
+          <button className="w-full mt-auto py-4 text-[10px] font-black tracking-[0.3em] uppercase border border-outline-variant/20 hover:border-primary/50 bg-background/20 hover:text-primary transition-all">
+            Full Inventory Analysis
           </button>
         </div>
       </div>
 
-      <div className="bg-surface-low rounded-sm overflow-hidden">
+      <div className="bg-surface-low rounded-sm overflow-hidden border border-outline-variant/10">
         <div className="p-8 border-b border-outline-variant/10 flex justify-between items-center">
-          <h2 className="font-headline text-2xl font-bold tracking-tight">{labels.orders}</h2>
-          <div className="flex gap-6 items-center">
+          <h2 className="font-headline text-2xl font-black uppercase tracking-tight italic">{labels.orders}</h2>
+          <div className="flex gap-8 items-center">
             <div className="flex gap-2">
-              <span className="px-3 py-1 bg-error-container text-on-surface text-[10px] font-black uppercase tracking-tighter">NEW: {newCount}</span>
-              <span className="px-3 py-1 bg-secondary/20 text-secondary text-[10px] font-black uppercase tracking-tighter">PREP: {preparingCount}</span>
-              <span className="px-3 py-1 bg-surface-high text-on-surface text-[10px] font-black uppercase tracking-tighter">DONE: {deliveredCount}</span>
+              <span className="px-3 py-1 bg-primary/10 text-primary text-[10px] font-black uppercase tracking-tighter border border-primary/20 italic">LIVE TRANSACTIONS</span>
             </div>
-            <button className="text-xs font-bold text-primary flex items-center gap-1 hover:underline">
-              View History
+            <button 
+              onClick={onViewHistory}
+              className="text-[10px] font-black uppercase tracking-[0.2em] text-on-surface/40 flex items-center gap-2 hover:text-primary transition-colors"
+            >
+              View Full History
               <ArrowRight className="w-4 h-4" />
             </button>
           </div>
         </div>
-        <table className="w-full text-left">
-          <thead className="bg-surface-highest/50 font-mono text-[10px] uppercase tracking-[0.2em] text-on-surface/40">
-            <tr>
-              <th className="px-8 py-4">ID</th>
-              <th className="px-8 py-4">Customer</th>
-              <th className="px-8 py-4">Items</th>
-              <th className="px-8 py-4">Total</th>
-              <th className="px-8 py-4">Status</th>
-              <th className="px-8 py-4 text-right">Action</th>
-            </tr>
-          </thead>
-          <tbody className="text-sm divide-y divide-outline-variant/5">
-            {topTwoRecent.map((order) => (
-              <tr key={order.id} className="hover:bg-surface-high transition-colors">
-                <td className="px-8 py-6 font-mono font-bold">{order.id}</td>
-                <td className="px-8 py-6">
-                  <div className="flex items-center gap-3">
-                    <div className="w-8 h-8 rounded-full bg-outline-variant/20 flex items-center justify-center font-bold text-xs">
-                      {order.customer.split(' ').map(n => n[0]).join('')}
-                    </div>
-                    {order.customer}
-                  </div>
-                </td>
-                <td className="px-8 py-6 text-on-surface/60">{order.items}</td>
-                <td className="px-8 py-6 font-bold">¥{order.total.toLocaleString()}</td>
-                <td className="px-8 py-6">
-                  <span className={cn(
-                    "flex items-center gap-2 font-bold text-xs uppercase italic",
-                    order.status === 'preparing' ? "text-primary" : order.status === 'delivered' ? "text-secondary" : "text-on-surface/40"
-                  )}>
-                    <span className={cn("w-1.5 h-1.5 rounded-full", order.status === 'preparing' ? "bg-primary" : order.status === 'delivered' ? "bg-secondary" : "bg-on-surface/20")}></span>
-                    {order.status}
-                  </span>
-                </td>
-                <td className="px-8 py-6 text-right">
-                  <button className="bg-surface-highest px-4 py-2 text-xs font-bold hover:bg-primary hover:text-on-primary-fixed transition-colors">Details</button>
-                </td>
+        <div className="overflow-x-auto">
+          <table className="w-full text-left">
+            <thead className="bg-surface-highest/30 font-mono text-[10px] uppercase tracking-[0.2em] text-on-surface/40">
+              <tr>
+                <th className="px-8 py-4">ID</th>
+                <th className="px-8 py-4">Customer</th>
+                <th className="px-8 py-4">Items</th>
+                <th className="px-8 py-4">Total</th>
+                <th className="px-8 py-4">Status</th>
+                <th className="px-8 py-4 text-right">Action</th>
               </tr>
-            ))}
-          </tbody>
-        </table>
+            </thead>
+            <tbody className="text-sm divide-y divide-outline-variant/5">
+              {recentOrders.map((order) => (
+                <tr key={order.id} className="hover:bg-background/40 transition-colors group">
+                  <td className="px-8 py-6 font-mono font-black italic text-primary">{order.id}</td>
+                  <td className="px-8 py-6">
+                    <div className="flex items-center gap-3">
+                      <div className="w-8 h-8 rounded-full bg-primary/10 text-primary flex items-center justify-center font-black text-[10px] italic border border-primary/20">
+                        {order.customer.split(' ').map(n => n[0]).join('')}
+                      </div>
+                      <span className="font-bold uppercase tracking-tight">{order.customer}</span>
+                    </div>
+                  </td>
+                  <td className="px-8 py-6 text-[11px] font-mono text-on-surface/50 tracking-tight">{order.items}</td>
+                  <td className="px-8 py-6 font-black italic text-secondary">{formatMoney(order.total)}</td>
+                  <td className="px-8 py-6">
+                    <span className={cn(
+                      "flex items-center gap-2 font-black text-[10px] uppercase italic tracking-tighter",
+                      order.status === 'preparing' ? "text-primary" : order.status === 'delivered' ? "text-secondary" : "text-on-surface/30"
+                    )}>
+                      <span className={cn("w-2 h-2 rounded-full shadow-[0_0_8px_currentColor]", 
+                        order.status === 'preparing' ? "bg-primary animate-pulse" : 
+                        order.status === 'delivered' ? "bg-secondary" : 
+                        "bg-on-surface/20"
+                      )}></span>
+                      {order.status}
+                    </span>
+                  </td>
+                  <td className="px-8 py-6 text-right">
+                    <button 
+                      onClick={() => setSelectedOrder(order)}
+                      className="bg-surface-highest/50 px-5 py-2 text-[10px] font-black uppercase italic tracking-widest border border-outline-variant/20 hover:bg-neon-gradient hover:text-on-primary-fixed hover:border-transparent transition-all"
+                    >
+                      Details
+                    </button>
+                  </td>
+                </tr>
+              ))}
+              {recentOrders.length === 0 && (
+                <tr>
+                  <td colSpan={6} className="px-8 py-20 text-center text-xs font-black uppercase tracking-[0.4em] text-on-surface/20">
+                    No active transactions found
+                  </td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+        </div>
       </div>
+
+      {selectedOrder && (
+        <OrderDetailsModal 
+          order={selectedOrder} 
+          onClose={() => setSelectedOrder(null)} 
+          labels={labels} 
+          formatMoney={formatMoney} 
+        />
+      )}
+    </div>
+  );
+};
+
+const OrderHistoryView = ({
+  orders,
+  labels,
+  formatMoney,
+}: {
+  orders: Order[];
+  labels: typeof TEXT.en;
+  formatMoney: (value: number) => string;
+}) => {
+  const [searchTerm, setSearchTerm] = useState('');
+  const [selectedOrder, setSelectedOrder] = useState<Order | null>(null);
+
+  const filtered = useMemo(() => {
+    const kw = searchTerm.toLowerCase().trim();
+    return orders.filter(o => 
+      o.id.toLowerCase().includes(kw) || 
+      o.customer.toLowerCase().includes(kw) || 
+      o.items.toLowerCase().includes(kw)
+    );
+  }, [orders, searchTerm]);
+
+  return (
+    <div className="flex flex-col h-[calc(100vh-4rem)] animate-in slide-in-from-right-10 duration-500">
+      <div className="p-8 border-b border-outline-variant/10 bg-surface-low">
+        <div className="flex flex-col md:flex-row justify-between items-start md:items-end gap-6 mb-8">
+          <div>
+            <p className="font-mono text-primary text-[10px] font-black uppercase tracking-[0.3em] mb-2 leading-none">{labels.inventoryControl}</p>
+            <h2 className="font-headline text-4xl font-black italic tracking-tighter uppercase leading-none">Order Repository</h2>
+          </div>
+          <div className="relative w-full md:w-96">
+            <Search className="absolute left-4 top-1/2 -translate-y-1/2 text-on-surface/30 w-4 h-4" />
+            <input 
+              className="w-full bg-background/40 border border-outline-variant/20 focus:border-primary/50 text-on-surface pl-12 pr-6 py-3.5 text-xs font-mono rounded-sm tracking-[0.2em] uppercase transition-all" 
+              placeholder="SEARCH ARCHIVES..."
+              value={searchTerm}
+              onChange={(e) => setSearchTerm(e.target.value)}
+            />
+          </div>
+        </div>
+        
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+          <div className="bg-background/20 p-4 border border-outline-variant/10 rounded-sm">
+            <p className="text-[10px] font-black uppercase tracking-widest text-on-surface/40 leading-none mb-2">Total Archival</p>
+            <p className="text-2xl font-black italic font-headline tracking-tighter">{orders.length}</p>
+          </div>
+          <div className="bg-background/20 p-4 border border-outline-variant/10 rounded-sm">
+            <p className="text-[10px] font-black uppercase tracking-widest text-on-surface/40 leading-none mb-2">Delivered</p>
+            <p className="text-2xl font-black italic font-headline tracking-tighter text-secondary">{orders.filter(o => o.status === 'delivered').length}</p>
+          </div>
+          <div className="bg-background/20 p-4 border border-outline-variant/10 rounded-sm">
+            <p className="text-[10px] font-black uppercase tracking-widest text-on-surface/40 leading-none mb-2">Average Ticket</p>
+            <p className="text-2xl font-black italic font-headline tracking-tighter text-primary">{formatMoney(orders.length ? Math.round(orders.reduce((s, o) => s + o.total, 0) / orders.length) : 0)}</p>
+          </div>
+        </div>
+      </div>
+
+      <div className="flex-1 overflow-y-auto p-4 lg:p-8 pr-4 custom-scrollbar">
+        <div className="bg-surface-low rounded-sm border border-outline-variant/10 shadow-lg overflow-hidden">
+          <table className="w-full text-left">
+            <thead className="bg-surface-highest/20 font-mono text-[10px] uppercase tracking-[0.2em] text-on-surface/40">
+              <tr>
+                <th className="px-8 py-5">Date / Time</th>
+                <th className="px-8 py-5">Order ID</th>
+                <th className="px-8 py-5">Customer</th>
+                <th className="px-8 py-5 text-right">Revenue</th>
+                <th className="px-8 py-5 text-center">Status</th>
+                <th className="px-8 py-5 text-right">Control</th>
+              </tr>
+            </thead>
+            <tbody className="text-sm divide-y divide-outline-variant/10 uppercase">
+              {filtered.map((order) => (
+                <tr key={order.id} className="hover:bg-background/30 transition-colors group">
+                  <td className="px-8 py-6 font-mono text-[10px] text-on-surface/40">
+                    {new Date(order.createdAt || 0).toLocaleString()}
+                  </td>
+                  <td className="px-8 py-6 font-mono font-black italic text-primary">{order.id}</td>
+                  <td className="px-8 py-6 font-bold tracking-tight">{order.customer}</td>
+                  <td className="px-8 py-6 text-right font-black italic text-secondary">{formatMoney(order.total)}</td>
+                  <td className="px-8 py-6">
+                    <div className="flex justify-center">
+                      <span className={cn(
+                        "px-3 py-1 rounded-sm text-[10px] font-black uppercase italic tracking-widest",
+                        order.status === 'delivered' ? "bg-secondary/10 text-secondary border border-secondary/20" : "bg-primary/10 text-primary border border-primary/20"
+                      )}>{order.status}</span>
+                    </div>
+                  </td>
+                  <td className="px-8 py-6 text-right">
+                    <button 
+                      onClick={() => setSelectedOrder(order)}
+                      className="text-[10px] font-black uppercase tracking-widest hover:text-primary transition-colors underline underline-offset-4"
+                    >
+                      Audit View
+                    </button>
+                  </td>
+                </tr>
+              ))}
+              {filtered.length === 0 && (
+                <tr>
+                  <td colSpan={6} className="px-8 py-20 text-center text-xs font-black uppercase tracking-[0.4em] opacity-10">
+                    End of Archives
+                  </td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      {selectedOrder && (
+        <OrderDetailsModal 
+          order={selectedOrder} 
+          onClose={() => setSelectedOrder(null)} 
+          labels={labels} 
+          formatMoney={formatMoney} 
+        />
+      )}
     </div>
   );
 };
@@ -890,6 +1457,7 @@ const POSView = ({
   menuItems,
   onSubmitOrder,
   labels,
+  formatMoney,
 }: {
   menuItems: MenuItem[];
   onSubmitOrder: (payload: {
@@ -901,13 +1469,27 @@ const POSView = ({
     lineItems: { name: string; qty: number; station: 'HOT' | 'COLD' }[];
   }) => Promise<void>;
   labels: typeof TEXT.en;
+  formatMoney: (value: number) => string;
 }) => {
   const [cart, setCart] = useState<{ item: MenuItem; qty: number }[]>([]);
   const [note, setNote] = useState('');
   const [customer, setCustomer] = useState('');
   const [orderType, setOrderType] = useState<'dine-in' | 'takeout'>('dine-in');
   const [isSubmitting, setIsSubmitting] = useState(false);
-  const categories = ['All Items', 'Classic Ramen', 'Parisian Pastries', 'Fusion Tapas', 'Craft Cocktails', 'Midnight Specials'];
+  const [selectedCategory, setSelectedCategory] = useState<string>(labels.filterAll);
+  
+  const categories = useMemo(() => {
+    const cats = Array.from(new Set(menuItems.filter(item => item.active).map(item => item.category))).filter(Boolean);
+    return [labels.filterAll, ...cats];
+  }, [menuItems, labels.filterAll]);
+
+  const saleMenuItems = useMemo(() => {
+    return menuItems.filter((item) => {
+      if (!item.active) return false;
+      if (selectedCategory === labels.filterAll) return true;
+      return item.category === selectedCategory;
+    });
+  }, [menuItems, selectedCategory, labels.filterAll]);
 
   const addToCart = (item: MenuItem) => {
     setCart(prev => {
@@ -951,7 +1533,7 @@ const POSView = ({
         name: line.item.name,
         qty: line.qty,
         station:
-          line.item.category === 'Drinks' || line.item.category === 'Pastries'
+          line.item.category === 'เครื่องดื่ม' || line.item.category === 'Drinks' || line.item.category === 'Pastries'
             ? 'COLD'
             : 'HOT',
       })),
@@ -966,19 +1548,25 @@ const POSView = ({
   return (
     <div className="flex flex-col xl:flex-row h-[calc(100vh-4rem)] animate-in fade-in duration-500">
       <div className="flex-1 overflow-y-auto p-4 lg:p-8 pr-4 custom-scrollbar">
-        <div className="flex gap-3 mb-8 overflow-x-auto pb-2">
+        <div className="flex gap-3 mb-8 overflow-x-auto pb-2 custom-scrollbar">
           {categories.map(cat => (
-            <button key={cat} className={cn(
-              "px-6 py-2 rounded-full text-sm whitespace-nowrap transition-colors font-bold",
-              cat === 'All Items' ? "bg-primary text-on-primary-fixed" : "bg-surface-high text-on-surface/70 hover:text-on-surface"
-            )}>
-              {cat === 'All Items' ? labels.product : cat}
+            <button 
+              key={cat} 
+              onClick={() => setSelectedCategory(cat)}
+              className={cn(
+                "px-6 py-2 rounded-full text-sm whitespace-nowrap transition-all font-bold active:scale-95 shadow-sm",
+                selectedCategory === cat 
+                  ? "bg-neon-gradient text-on-primary-fixed shadow-primary/20" 
+                  : "bg-surface-high text-on-surface/70 hover:text-on-surface hover:bg-surface-highest"
+              )}
+            >
+              {cat}
             </button>
           ))}
         </div>
 
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6">
-          {menuItems.map(item => (
+          {saleMenuItems.map(item => (
             <div 
               key={item.id} 
               onClick={() => addToCart(item)}
@@ -987,7 +1575,7 @@ const POSView = ({
               <div className="h-48 w-full relative overflow-hidden">
                 <img src={item.image} alt={item.name} className="w-full h-full object-cover group-hover:scale-110 transition-transform duration-500" referrerPolicy="no-referrer" />
                 <div className="absolute top-3 right-3 bg-background/80 backdrop-blur-sm px-3 py-1 rounded-sm border border-primary/20">
-                  <span className="font-mono text-primary font-bold">¥{item.price.toLocaleString()}</span>
+                  <span className="font-mono text-primary font-bold">{formatMoney(item.price)}</span>
                 </div>
               </div>
               <div className="p-4">
@@ -1050,7 +1638,7 @@ const POSView = ({
               <div className="flex-1">
                 <div className="flex justify-between items-start">
                   <span className="text-sm font-bold font-headline leading-tight">{i.item.name}</span>
-                  <span className="text-sm font-mono font-bold">¥{(i.item.price * i.qty).toLocaleString()}</span>
+                  <span className="text-sm font-mono font-bold">{formatMoney(i.item.price * i.qty)}</span>
                 </div>
                 <div className="flex items-center justify-between mt-1">
                   <div className="flex items-center gap-2">
@@ -1090,15 +1678,15 @@ const POSView = ({
           <div className="space-y-2 mb-6">
             <div className="flex justify-between text-xs font-mono text-on-surface/60">
               <span>{labels.subtotal}</span>
-              <span>¥{subtotal.toLocaleString()}</span>
+              <span>{formatMoney(subtotal)}</span>
             </div>
             <div className="flex justify-between text-xs font-mono text-on-surface/60">
               <span>{labels.tax} (10%)</span>
-              <span>¥{tax.toLocaleString()}</span>
+              <span>{formatMoney(tax)}</span>
             </div>
             <div className="flex justify-between text-lg font-headline font-black pt-2 border-t border-outline-variant/10 text-primary">
               <span>{labels.total}</span>
-              <span>¥{total.toLocaleString()}</span>
+              <span>{formatMoney(total)}</span>
             </div>
           </div>
           <button
@@ -1114,67 +1702,165 @@ const POSView = ({
   );
 };
 
-const KitchenView = ({ kitchenOrders }: { kitchenOrders: KitchenOrder[] }) => {
+const KitchenView = ({ 
+  kitchenOrders, 
+  onUpdateStatus,
+  labels,
+  isSoundEnabled,
+  onToggleSound,
+}: { 
+  kitchenOrders: KitchenOrder[]; 
+  onUpdateStatus: (orderId: string, status: Order['status']) => Promise<void>;
+  labels: typeof TEXT.en;
+  isSoundEnabled: boolean;
+  onToggleSound: (enabled: boolean) => void;
+}) => {
+  const [stationFilter, setStationFilter] = useState<'ALL' | 'HOT' | 'COLD'>('ALL');
+  const [updatingId, setUpdatingId] = useState<string | null>(null);
+
+  const filteredOrders = useMemo(() => {
+    if (stationFilter === 'ALL') return kitchenOrders;
+    return kitchenOrders.filter(order => 
+      order.items.some(item => item.station === stationFilter)
+    );
+  }, [kitchenOrders, stationFilter]);
+
+  const handleAction = async (order: KitchenOrder) => {
+    setUpdatingId(order.id);
+    try {
+      if (order.dbStatus === 'new') {
+        await onUpdateStatus(order.id, 'preparing');
+      } else if (order.dbStatus === 'preparing') {
+        await onUpdateStatus(order.id, 'delivered');
+      }
+    } finally {
+      setUpdatingId(null);
+    }
+  };
+
   return (
-    <div className="p-8 grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-6 animate-in fade-in duration-500">
-      {kitchenOrders.map((order) => (
-        <div key={order.id} className={cn(
-          "flex flex-col bg-surface-low relative group border-t-4",
-          order.status === 'overdue' ? "border-error" : order.status === 'delayed' ? "border-secondary" : "border-outline-variant"
-        )}>
-          <div className="p-6 flex flex-col h-full">
-            <div className="flex justify-between items-start mb-6">
-              <div>
-                <span className={cn(
-                  "font-mono text-[10px] uppercase font-bold tracking-[0.2em]",
-                  order.status === 'overdue' ? "text-error" : order.status === 'delayed' ? "text-secondary" : "text-on-surface/40"
-                )}>
-                  {order.status === 'overdue' ? 'Priority Overdue' : order.status === 'delayed' ? 'Delayed Warning' : 'New Order'}
-                </span>
-                <h3 className="font-headline text-2xl font-bold mt-1">{order.id}</h3>
-                <p className="text-xs text-on-surface/40">Order for: {order.customer} ({order.type})</p>
-              </div>
-              <div className={cn(
-                "px-3 py-2 flex flex-col items-end",
-                order.status === 'overdue' ? "bg-error/10" : order.status === 'delayed' ? "bg-secondary/10" : "bg-surface-high"
-              )}>
-                <span className={cn("font-mono text-xs font-bold", order.status === 'overdue' ? "text-error" : order.status === 'delayed' ? "text-secondary" : "text-on-surface")}>
-                  {order.elapsed} elapsed
-                </span>
-                {order.est && <span className="text-[10px] opacity-60 font-medium">EST: {order.est}</span>}
-              </div>
-            </div>
-
-            <div className="space-y-4 flex-grow">
-              {order.items.map((item, idx) => (
-                <div key={idx} className="flex justify-between items-center">
-                  <div className="flex items-center gap-3">
-                    <span className={cn("font-mono text-lg font-bold", order.status === 'overdue' ? "text-error" : order.status === 'delayed' ? "text-secondary" : "text-primary")}>
-                      {item.qty}x
-                    </span>
-                    <span className="font-bold text-base">{item.name}</span>
-                  </div>
-                  <span className="font-mono text-[10px] bg-surface-high px-2 py-1 uppercase font-bold text-on-surface/60">{item.station}</span>
-                </div>
-              ))}
-              {order.note && (
-                <div className="mt-4 p-3 bg-background border-l-2 border-primary italic text-xs text-on-surface/70">
-                  "{order.note}"
-                </div>
-              )}
-            </div>
-
-            <div className="mt-8">
-              <button className={cn(
-                "w-full py-4 font-headline font-bold text-sm tracking-widest uppercase active:scale-95 transition-all",
-                order.status === 'overdue' ? "bg-neon-gradient text-on-primary-fixed" : "bg-surface-high text-on-surface"
-              )}>
-                {order.status === 'overdue' ? 'Complete Order' : 'Ready for Pickup'}
+    <div className="flex flex-col h-[calc(100vh-4rem)] animate-in fade-in duration-500">
+      <div className="p-4 lg:p-8 pb-0">
+        <div className="flex items-center gap-4 mb-8">
+          <div className="flex bg-surface-low p-1 rounded-sm border border-outline-variant/10">
+            {(['ALL', 'HOT', 'COLD'] as const).map((station) => (
+              <button
+                key={station}
+                onClick={() => setStationFilter(station)}
+                className={cn(
+                  "px-6 py-2 text-xs font-bold font-headline rounded-sm uppercase tracking-[0.2em] transition-all",
+                  stationFilter === station 
+                    ? "bg-primary text-on-primary-fixed shadow-lg shadow-primary/20" 
+                    : "text-on-surface/40 hover:text-on-surface"
+                )}
+              >
+                {station === 'ALL' ? labels.filterAll : station}
               </button>
+            ))}
+          </div>
+          <div className="h-0.5 flex-1 bg-outline-variant/10"></div>
+          <div className="flex items-center gap-4">
+            <button
+              onClick={() => onToggleSound(!isSoundEnabled)}
+              className={cn(
+                "flex items-center gap-2 px-4 py-2 rounded-sm border transition-all active:scale-95",
+                isSoundEnabled 
+                  ? "bg-secondary/10 border-secondary/30 text-secondary" 
+                  : "bg-surface-high border-outline-variant/10 text-on-surface/40 hover:text-on-surface"
+              )}
+              title={isSoundEnabled ? labels.soundOn : labels.soundOff}
+            >
+              {isSoundEnabled ? <Volume2 className="w-4 h-4" /> : <VolumeX className="w-4 h-4" />}
+              <span className="text-[10px] font-mono font-bold uppercase tracking-widest hidden sm:inline">
+                {isSoundEnabled ? labels.soundOn : labels.soundOff}
+              </span>
+            </button>
+            <div className="flex items-center gap-2">
+              <span className="w-2 h-2 rounded-full bg-primary animate-pulse"></span>
+              <span className="text-[10px] font-mono font-bold text-on-surface/40 uppercase tracking-widest leading-none">Live Ops Active</span>
             </div>
           </div>
         </div>
-      ))}
+      </div>
+
+      <div className="flex-1 overflow-y-auto p-4 lg:p-8 pt-0 pr-4 custom-scrollbar">
+        <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-6">
+          {filteredOrders.map((order) => (
+            <div key={order.id} className={cn(
+              "flex flex-col bg-surface-low relative group border-t-4 transition-all duration-300",
+              order.status === 'overdue' ? "border-error shadow-[0_0_20px_rgba(255,82,92,0.1)]" : order.status === 'delayed' ? "border-secondary" : "border-outline-variant"
+            )}>
+              <div className="p-6 flex flex-col h-full">
+                <div className="flex justify-between items-start mb-6">
+                  <div>
+                    <span className={cn(
+                      "font-mono text-[10px] uppercase font-bold tracking-[0.2em]",
+                      order.status === 'overdue' ? "text-error" : order.status === 'delayed' ? "text-secondary" : "text-on-surface/40"
+                    )}>
+                      {order.status === 'overdue' ? 'Priority Overdue' : order.status === 'delayed' ? 'Delayed Warning' : 'New Order'}
+                    </span>
+                    <h3 className="font-headline text-2xl font-bold mt-1 tracking-tighter italic">{order.id}</h3>
+                    <p className="text-xs text-on-surface/40 font-mono mt-1">GUEST: {order.customer} <span className="mx-1">/</span> {order.type.toUpperCase()}</p>
+                  </div>
+                  <div className={cn(
+                    "px-4 py-2 flex flex-col items-end rounded-sm",
+                    order.status === 'overdue' ? "bg-error/10" : order.status === 'delayed' ? "bg-secondary/10" : "bg-surface-high"
+                  )}>
+                    <span className={cn("font-mono text-xs font-bold", order.status === 'overdue' ? "text-error" : order.status === 'delayed' ? "text-secondary" : "text-on-surface")}>
+                      {order.elapsed}
+                    </span>
+                    <span className="text-[8px] opacity-40 font-bold uppercase tracking-widest mt-1">ELAPSED</span>
+                  </div>
+                </div>
+
+                <div className="space-y-4 flex-grow">
+                  {order.items.filter(item => stationFilter === 'ALL' || item.station === stationFilter).map((item, idx) => (
+                    <div key={idx} className="flex justify-between items-center group/item p-2 hover:bg-background/40 transition-colors rounded-sm border-l-2 border-transparent hover:border-primary">
+                      <div className="flex items-center gap-4">
+                        <span className={cn("font-mono text-xl font-black", order.status === 'overdue' ? "text-error" : order.status === 'delayed' ? "text-secondary" : "text-primary")}>
+                          {item.qty}
+                        </span>
+                        <div className="flex flex-col">
+                          <span className="font-bold text-base uppercase font-headline tracking-tighter">{item.name}</span>
+                          <span className="text-[10px] text-on-surface/40 font-mono tracking-widest">{item.station}</span>
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                  {order.note && (
+                    <div className="mt-4 p-4 bg-background/60 border-l-2 border-secondary italic text-[11px] text-on-surface/80 leading-relaxed rounded-r-sm">
+                      <p className="text-[8px] font-bold text-secondary uppercase tracking-widest mb-1 not-italic">Chef's Note:</p>
+                      "{order.note}"
+                    </div>
+                  )}
+                </div>
+
+                <div className="mt-8">
+                  <button 
+                    onClick={() => handleAction(order)}
+                    disabled={updatingId === order.id}
+                    className={cn(
+                      "w-full py-5 font-headline font-black text-sm tracking-[0.2em] uppercase active:scale-95 transition-all rounded-sm shadow-lg",
+                      updatingId === order.id ? "opacity-50 grayscale" :
+                      order.dbStatus === 'new' ? "bg-surface-highest text-on-surface" : "bg-neon-gradient text-on-primary-fixed shadow-primary/20"
+                    )}
+                  >
+                    {updatingId === order.id ? labels.uploading :
+                     order.dbStatus === 'new' ? "Start Cooking" : "Ready for Pickup"}
+                  </button>
+                </div>
+              </div>
+            </div>
+          ))}
+
+          {filteredOrders.length === 0 && (
+            <div className="col-span-full flex flex-col items-center justify-center py-40 border-2 border-dashed border-outline-variant/10 rounded-sm">
+              <ChefHat className="w-16 h-16 text-on-surface/10 mb-4" />
+              <p className="font-headline font-black uppercase tracking-[0.4em] text-on-surface/20 text-sm">{labels.noItemsFound}</p>
+            </div>
+          )}
+        </div>
+      </div>
     </div>
   );
 };
@@ -1182,12 +1868,252 @@ const KitchenView = ({ kitchenOrders }: { kitchenOrders: KitchenOrder[] }) => {
 const MenuView = ({
   menuItems,
   onChangeStock,
+  inventoryMovements,
+  ingredients,
+  menuRecipes,
+  onAddMenuItem,
+  onAddIngredient,
+  onUpsertRecipeLine,
+  onUpdateMenuMeta,
+  onDeleteMenuItem,
+  onToggleMenuActive,
+  formatMoney,
+  showIngredientPanel = true,
   labels,
 }: {
   menuItems: MenuItem[];
-  onChangeStock: (itemId: string, nextStock: number) => void;
+  onChangeStock: (itemId: string, nextStock: number, reason?: string) => void;
+  inventoryMovements: InventoryMovement[];
+  ingredients: IngredientItem[];
+  menuRecipes: Record<string, MenuRecipeLine[]>;
+  onAddMenuItem: (payload: {
+    name: string;
+    category: string;
+    price: number;
+    cost: number;
+    stock: number;
+    imageFile?: File | null;
+    description: string;
+    recipeLines?: MenuRecipeLine[];
+    active?: boolean;
+  }) => Promise<void>;
+  onAddIngredient: (payload: {
+    name: string;
+    unit: string;
+    unitCost: number;
+    stock: number;
+    category?: string;
+    imageFile?: File | null;
+  }) => Promise<void>;
+  onUpsertRecipeLine: (payload: {
+    menuId: string;
+    ingredientId: string;
+    quantity: number;
+  }) => void;
+  onUpdateMenuMeta: (itemId: string, patch: Partial<Pick<MenuItem, 'category' | 'cost' | 'price'>>) => void;
+  onDeleteMenuItem: (itemId: string) => Promise<void>;
+  onToggleMenuActive: (itemId: string, active: boolean) => Promise<void>;
+  formatMoney: (value: number) => string;
+  showIngredientPanel?: boolean;
   labels: typeof TEXT.en;
 }) => {
+  const [searchTerm, setSearchTerm] = useState('');
+  const [stockFilter, setStockFilter] = useState<'all' | 'low' | 'out'>('all');
+  const [newMenu, setNewMenu] = useState({
+    name: '',
+    category: MENU_CATEGORY_OPTIONS[0],
+    price: 0,
+    cost: 0,
+    stock: 0,
+    description: '',
+    active: true,
+  });
+  const [draftRecipeIngredientId, setDraftRecipeIngredientId] = useState(ingredients[0]?.id ?? '');
+  const [draftRecipeQty, setDraftRecipeQty] = useState(1);
+  const [draftRecipeLines, setDraftRecipeLines] = useState<MenuRecipeLine[]>([]);
+  const [newIngredient, setNewIngredient] = useState({
+    name: '',
+    unitCost: 0,
+    stock: 0,
+  });
+  const [newMenuImageFile, setNewMenuImageFile] = useState<File | null>(null);
+  const [newIngredientImageFile, setNewIngredientImageFile] = useState<File | null>(null);
+  const [isSubmittingMenu, setIsSubmittingMenu] = useState(false);
+  const [isSubmittingIngredient, setIsSubmittingIngredient] = useState(false);
+  const [selectedMenuId, setSelectedMenuId] = useState(menuItems[0]?.id ?? '');
+  const [selectedIngredientId, setSelectedIngredientId] = useState(ingredients[0]?.id ?? '');
+  const [recipeQty, setRecipeQty] = useState(1);
+
+  const categories = useMemo(
+    () => [labels.filterAll, ...Array.from(new Set(menuItems.map((item) => item.category)))],
+    [labels.filterAll, menuItems],
+  );
+  const categoryOptions = useMemo(
+    () => Array.from(new Set([...MENU_CATEGORY_OPTIONS, ...menuItems.map((item) => item.category)])).filter(Boolean),
+    [menuItems],
+  );
+  const [activeCategory, setActiveCategory] = useState<string>(labels.filterAll);
+
+  useEffect(() => {
+    if (!categories.includes(activeCategory)) {
+      setActiveCategory(labels.filterAll);
+    }
+  }, [activeCategory, categories, labels.filterAll]);
+
+  useEffect(() => {
+    if (!selectedMenuId && menuItems.length > 0) {
+      setSelectedMenuId(menuItems[0].id);
+    }
+  }, [menuItems, selectedMenuId]);
+
+  useEffect(() => {
+    if (!selectedIngredientId && ingredients.length > 0) {
+      setSelectedIngredientId(ingredients[0].id);
+    }
+  }, [ingredients, selectedIngredientId]);
+
+  useEffect(() => {
+    if (!draftRecipeIngredientId && ingredients.length > 0) {
+      setDraftRecipeIngredientId(ingredients[0].id);
+    }
+  }, [draftRecipeIngredientId, ingredients]);
+
+  const filteredItems = useMemo(() => {
+    const keyword = searchTerm.trim().toLowerCase();
+    return menuItems.filter((item) => {
+      const matchCategory = activeCategory === labels.filterAll || item.category === activeCategory;
+      const matchKeyword =
+        keyword.length === 0 ||
+        item.name.toLowerCase().includes(keyword) ||
+        item.sku.toLowerCase().includes(keyword);
+      const matchStock =
+        stockFilter === 'all'
+          ? true
+          : stockFilter === 'out'
+            ? item.stock === 0
+            : item.stock > 0 && item.stock <= 10;
+      return matchCategory && matchKeyword && matchStock;
+    });
+  }, [menuItems, activeCategory, labels.filterAll, searchTerm, stockFilter]);
+
+  const summary = useMemo(() => {
+    const totalSkus = menuItems.length;
+    const totalUnits = menuItems.reduce((sum, item) => sum + item.stock, 0);
+    const lowStock = menuItems.filter((item) => item.stock > 0 && item.stock <= 10).length;
+    const outOfStock = menuItems.filter((item) => item.stock === 0).length;
+    const inventoryValue = menuItems.reduce((sum, item) => sum + item.cost * item.stock, 0);
+    return { totalSkus, totalUnits, lowStock, outOfStock, inventoryValue };
+  }, [menuItems]);
+
+  const recipeLines = menuRecipes[selectedMenuId] || [];
+  const ingredientMap = useMemo(
+    () => new Map(ingredients.map((ingredient) => [ingredient.id, ingredient] as const)),
+    [ingredients],
+  );
+
+  const recipeCost = recipeLines.reduce((sum, line) => {
+    const ingredient = ingredientMap.get(line.ingredientId);
+    return sum + (ingredient ? ingredient.unitCost * line.quantity : 0);
+  }, 0);
+  const selectedMenu = menuItems.find((item) => item.id === selectedMenuId);
+  const menuMargin = selectedMenu ? selectedMenu.price - recipeCost : 0;
+
+  const draftRecipeCost = useMemo(
+    () =>
+      draftRecipeLines.reduce((sum, line) => {
+        const ingredient = ingredientMap.get(line.ingredientId);
+        return sum + (ingredient ? ingredient.unitCost * line.quantity : 0);
+      }, 0),
+    [draftRecipeLines, ingredientMap],
+  );
+
+  const addDraftIngredientToRecipe = () => {
+    if (!draftRecipeIngredientId || draftRecipeQty <= 0) return;
+    const safeQty = Math.max(0.01, draftRecipeQty);
+    setDraftRecipeLines((prev) => {
+      const foundIndex = prev.findIndex((line) => line.ingredientId === draftRecipeIngredientId);
+      const next = [...prev];
+      if (foundIndex >= 0) {
+        next[foundIndex] = { ...next[foundIndex], quantity: safeQty };
+      } else {
+        next.push({ ingredientId: draftRecipeIngredientId, quantity: safeQty });
+      }
+      return next;
+    });
+  };
+
+  const removeDraftIngredient = (id: string) => {
+    setDraftRecipeLines((prev) => prev.filter((item) => item.ingredientId !== id));
+  };
+
+  const submitNewMenu = async () => {
+    if (!newMenu.name.trim()) return;
+    setIsSubmittingMenu(true);
+    try {
+      await onAddMenuItem({
+        name: newMenu.name.trim(),
+        category: newMenu.category.trim() || MENU_CATEGORY_OPTIONS[0],
+        price: Math.max(0, newMenu.price),
+        cost: Math.max(0, draftRecipeLines.length > 0 ? draftRecipeCost : newMenu.cost),
+        stock: Math.max(0, Math.floor(newMenu.stock)),
+        imageFile: newMenuImageFile,
+        description: newMenu.description.trim() || '-',
+        recipeLines: draftRecipeLines,
+        active: newMenu.active,
+      });
+      setNewMenu({
+        name: '',
+        category: MENU_CATEGORY_OPTIONS[0],
+        price: 0,
+        cost: 0,
+        stock: 0,
+        description: '',
+        active: true,
+      });
+      setNewMenuImageFile(null);
+      setDraftRecipeLines([]);
+    } finally {
+      setIsSubmittingMenu(false);
+    }
+  };
+
+  const submitNewIngredient = async () => {
+    if (!newIngredient.name.trim()) return;
+    setIsSubmittingIngredient(true);
+    try {
+      await onAddIngredient({
+        name: newIngredient.name.trim(),
+        unit: 'unit',
+        unitCost: Math.max(0, newIngredient.unitCost),
+        stock: Math.max(0, Math.floor(newIngredient.stock)),
+        imageFile: newIngredientImageFile,
+      });
+      setNewIngredient({
+        name: '',
+        unitCost: 0,
+        stock: 0,
+      });
+      setNewIngredientImageFile(null);
+    } finally {
+      setIsSubmittingIngredient(false);
+    }
+  };
+
+  const addIngredientToRecipe = () => {
+    if (!selectedMenuId || !selectedIngredientId || recipeQty <= 0) return;
+    onUpsertRecipeLine({
+      menuId: selectedMenuId,
+      ingredientId: selectedIngredientId,
+      quantity: recipeQty,
+    });
+  };
+
+  const stockStatus = (stock: number) => {
+    if (stock <= 0) return { label: labels.statusOut, cls: 'bg-error/20 text-error' };
+    if (stock <= 10) return { label: labels.statusLow, cls: 'bg-secondary/20 text-secondary' };
+    return { label: labels.statusAvailable, cls: 'bg-primary/15 text-primary' };
+  };
+
   return (
     <div className="p-4 lg:p-8 space-y-8 animate-in fade-in duration-500">
       <div className="flex flex-col md:flex-row justify-between items-start md:items-end mb-12 gap-6">
@@ -1195,22 +2121,317 @@ const MenuView = ({
           <p className="font-mono text-primary text-sm font-bold uppercase tracking-[0.2em] mb-2">{labels.inventoryControl}</p>
           <h3 className="font-headline font-black text-4xl text-on-surface leading-none uppercase">{labels.atelierStock}</h3>
         </div>
-        <div className="flex flex-wrap gap-4 items-center w-full md:w-auto">
-          <div className="relative flex-1 md:w-80">
+        <div className="flex flex-col gap-3 w-full md:w-auto md:min-w-[420px]">
+          <div className="flex flex-wrap gap-2">
+            {categories.map((category) => (
+              <button
+                key={category}
+                onClick={() => setActiveCategory(category)}
+                className={cn(
+                  "px-3 py-1.5 rounded-full text-xs font-bold",
+                  activeCategory === category
+                    ? "bg-primary text-on-primary-fixed"
+                    : "bg-surface-high text-on-surface/70",
+                )}
+              >
+                {category}
+              </button>
+            ))}
+          </div>
+          <div className="flex flex-wrap gap-2">
+            {[
+              { key: 'all' as const, label: labels.filterAll },
+              { key: 'low' as const, label: labels.filterLow },
+              { key: 'out' as const, label: labels.filterOut },
+            ].map((filter) => (
+              <button
+                key={filter.key}
+                onClick={() => setStockFilter(filter.key)}
+                className={cn(
+                  "px-3 py-1.5 rounded-full text-xs font-bold",
+                  stockFilter === filter.key
+                    ? "bg-secondary text-background"
+                    : "bg-surface-high text-on-surface/70",
+                )}
+              >
+                {filter.label}
+              </button>
+            ))}
+          </div>
+          <div className="relative w-full md:w-80">
             <Search className="absolute left-4 top-1/2 -translate-y-1/2 text-on-surface/40 w-4 h-4" />
             <input 
               className="w-full bg-surface-low border-none focus:ring-1 focus:ring-primary text-on-surface pl-10 pr-4 py-3 text-xs font-mono rounded-sm tracking-widest uppercase transition-all" 
               placeholder={labels.searchProducts}
+              value={searchTerm}
+              onChange={(event) => setSearchTerm(event.target.value)}
               type="text"
             />
           </div>
-          <button className="bg-neon-gradient text-on-primary-fixed font-headline font-bold text-sm uppercase px-8 py-3 rounded-sm shadow-xl active:scale-95 transition-all">
-            {labels.addProduct}
-          </button>
         </div>
       </div>
 
-      <div className="bg-surface-low p-1 rounded-sm overflow-x-auto">
+      <div className={cn("grid gap-6", showIngredientPanel ? "grid-cols-1 xl:grid-cols-2" : "grid-cols-1")}>
+        <div className="bg-surface-low border border-outline-variant/10 rounded-sm p-4 space-y-3">
+          <h4 className="font-headline text-lg font-bold">{labels.addMenuItem}</h4>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+            <div className="bg-background/60 px-3 py-2 rounded-sm">
+              <div className="flex items-center justify-between mb-1">
+                <span className="text-xs font-semibold">{labels.menuName}</span>
+                <span className="text-[10px] text-on-surface/55">{labels.menuFieldHintName}</span>
+              </div>
+              <input
+                className="w-full bg-background/30 px-2 py-1 rounded-sm outline-none"
+                placeholder={labels.menuName}
+                value={newMenu.name}
+                onChange={(event) => setNewMenu((prev) => ({ ...prev, name: event.target.value }))}
+              />
+            </div>
+            <div className="bg-background/60 px-3 py-2 rounded-sm">
+              <div className="flex items-center justify-between mb-1">
+                <span className="text-xs font-semibold">{labels.category}</span>
+                <span className="text-[10px] text-on-surface/55">{labels.menuFieldHintCategory}</span>
+              </div>
+              <select
+                className="w-full bg-background/30 px-2 py-1 rounded-sm outline-none"
+                value={newMenu.category}
+                onChange={(event) => setNewMenu((prev) => ({ ...prev, category: event.target.value }))}
+              >
+                {categoryOptions.map((category) => (
+                  <option key={category} value={category}>
+                    {category}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <div className="bg-background/60 px-3 py-2 rounded-sm md:col-span-2">
+              <div className="flex items-center justify-between mb-3">
+                <div>
+                  <h5 className="text-xs font-bold text-primary italic uppercase tracking-wider">{labels.recipeBuilder}</h5>
+                  <p className="text-[10px] text-on-surface/50">{labels.recipeItems}</p>
+                </div>
+                <div className="text-right">
+                  <p className="text-[10px] text-on-surface/50 uppercase tracking-widest">{labels.recipeCost}</p>
+                  <p className="font-mono text-sm font-bold text-secondary">{formatMoney(draftRecipeLines.length > 0 ? draftRecipeCost : newMenu.cost)}</p>
+                </div>
+              </div>
+              
+              <div className="flex gap-2 mb-4">
+                <select
+                  className="flex-1 bg-background/40 px-3 py-2 rounded-sm text-xs outline-none"
+                  value={draftRecipeIngredientId}
+                  onChange={(event) => setDraftRecipeIngredientId(event.target.value)}
+                >
+                  <option value="" disabled>{labels.selectIngredient}</option>
+                  {ingredients.map((ing) => (
+                    <option key={ing.id} value={ing.id}>{ing.name} ({formatMoney(ing.unitCost)}/{ing.unit})</option>
+                  ))}
+                </select>
+                <div className="w-24">
+                  <input
+                    type="number"
+                    min="0"
+                    step="0.01"
+                    className="w-full bg-background/40 px-3 py-2 rounded-sm text-xs outline-none"
+                    placeholder="Qty"
+                    value={draftRecipeQty}
+                    onChange={(event) => setDraftRecipeQty(Number(event.target.value))}
+                  />
+                </div>
+                <button
+                  type="button"
+                  onClick={addDraftIngredientToRecipe}
+                  className="bg-secondary text-background px-4 py-2 rounded-sm text-[10px] font-black uppercase tracking-tighter hover:scale-95 active:scale-90 transition-transform"
+                >
+                  {labels.addToRecipe}
+                </button>
+              </div>
+
+              {draftRecipeLines.length > 0 && (
+                <div className="space-y-1.5 max-h-32 overflow-y-auto pr-1 custom-scrollbar">
+                  {draftRecipeLines.map((line) => {
+                    const ing = ingredientMap.get(line.ingredientId);
+                    return (
+                      <div key={line.ingredientId} className="flex justify-between items-center bg-background/20 px-3 py-2 rounded-sm group relative">
+                        <div className="flex items-center gap-3">
+                          {ing?.image && <img src={ing.image} className="w-6 h-6 rounded-sm object-cover" alt="" />}
+                          <div>
+                            <p className="text-[10px] font-bold">{ing?.name || 'Unknown'}</p>
+                            <p className="text-[8px] text-on-surface/50">{line.quantity} {ing?.unit} × {formatMoney(ing?.unitCost ?? 0)}</p>
+                          </div>
+                        </div>
+                        <div className="flex items-center gap-3">
+                          <p className="text-[10px] font-mono font-bold text-secondary">{formatMoney((ing?.unitCost ?? 0) * line.quantity)}</p>
+                          <button
+                            type="button"
+                            onClick={() => removeDraftIngredient(line.ingredientId)}
+                            className="bg-error/20 text-error w-5 h-5 rounded-sm flex items-center justify-center text-xs opacity-0 group-hover:opacity-100 transition-opacity"
+                          >
+                            ×
+                          </button>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+
+              {draftRecipeLines.length === 0 && (
+                <div className="bg-background/20 px-3 py-4 rounded-sm border border-dashed border-outline-variant/30 flex items-center justify-center">
+                  <p className="text-[10px] uppercase tracking-widest text-on-surface/30 font-bold">{labels.noItemsFound}</p>
+                </div>
+              )}
+
+              {/* Keep a manual cost fallback if someone really wants to override, but hide if recipe exists */}
+              {draftRecipeLines.length === 0 && (
+                <div className="mt-4 pt-4 border-t border-outline-variant/10">
+                  <div className="flex items-center justify-between mb-1">
+                    <span className="text-[10px] font-semibold text-on-surface/50 uppercase tracking-widest">{labels.cost} (Manual Fallback)</span>
+                  </div>
+                  <input
+                    className="w-full bg-background/30 px-3 py-2 rounded-sm outline-none text-xs font-mono"
+                    placeholder={labels.cost}
+                    type="number"
+                    min="0"
+                    value={newMenu.cost}
+                    onChange={(event) => setNewMenu((prev) => ({ ...prev, cost: Number(event.target.value) }))}
+                  />
+                </div>
+              )}
+            </div>
+            <div className="bg-background/60 px-3 py-2 rounded-sm">
+              <div className="flex items-center justify-between mb-1">
+                <span className="text-xs font-semibold">{labels.price}</span>
+                <span className="text-[10px] text-on-surface/55">{labels.menuFieldHintPrice}</span>
+              </div>
+              <input
+                className="w-full bg-background/30 px-2 py-1 rounded-sm outline-none"
+                placeholder={labels.price}
+                type="number"
+                min="0"
+                value={newMenu.price}
+                onChange={(event) => setNewMenu((prev) => ({ ...prev, price: Number(event.target.value) }))}
+              />
+            </div>
+            <div className="bg-background/60 px-3 py-2 rounded-sm">
+              <div className="flex items-center justify-between mb-1">
+                <span className="text-xs font-semibold">{labels.stock}</span>
+                <span className="text-[10px] text-on-surface/55">{labels.menuFieldHintStock}</span>
+              </div>
+              <input
+                className="w-full bg-background/30 px-2 py-1 rounded-sm outline-none"
+                placeholder={labels.stock}
+                type="number"
+                min="0"
+                value={newMenu.stock}
+                onChange={(event) => setNewMenu((prev) => ({ ...prev, stock: Number(event.target.value) }))}
+              />
+            </div>
+          </div>
+
+          <div className="bg-background/60 px-3 py-2 rounded-sm">
+            <div className="flex items-center justify-between mb-1">
+              <span className="text-xs font-semibold">{labels.orderNote}</span>
+              <span className="text-[10px] text-on-surface/55">{labels.menuFieldHintDesc}</span>
+            </div>
+            <input
+              className="w-full bg-background/30 px-2 py-1 rounded-sm outline-none"
+              placeholder={labels.orderNote}
+              value={newMenu.description}
+              onChange={(event) => setNewMenu((prev) => ({ ...prev, description: event.target.value }))}
+            />
+          </div>
+          <label className="block bg-background/60 px-3 py-2 rounded-sm">
+            <div className="flex items-center justify-between mb-1">
+              <span className="text-xs font-semibold">{labels.uploadImage}</span>
+              <span className="text-[10px] text-on-surface/55">{labels.menuFieldHintImage}</span>
+            </div>
+            <input
+              className="w-full bg-background/30 px-2 py-1 rounded-sm outline-none file:mr-3 file:px-3 file:py-1 file:rounded-sm file:border-0 file:bg-surface-high file:text-on-surface"
+              type="file"
+              accept="image/*"
+              onChange={(event) => setNewMenuImageFile(event.target.files?.[0] ?? null)}
+            />
+          </label>
+          <label className="flex items-center justify-between bg-background/60 px-3 py-2 rounded-sm">
+            <span className="text-xs font-semibold">{labels.status}</span>
+            <button
+              type="button"
+              onClick={() => setNewMenu((prev) => ({ ...prev, active: !prev.active }))}
+              className={cn(
+                "px-3 py-1 rounded-full text-[10px] font-bold uppercase tracking-widest",
+                newMenu.active ? "bg-primary/15 text-primary" : "bg-error/20 text-error",
+              )}
+            >
+              {newMenu.active ? labels.statusAvailable : labels.statusOut}
+            </button>
+          </label>
+          <button
+            onClick={submitNewMenu}
+            disabled={isSubmittingMenu}
+            className="bg-neon-gradient text-on-primary-fixed px-6 py-2 rounded-sm font-bold disabled:opacity-60"
+          >
+            {isSubmittingMenu ? labels.uploading : labels.addMenuItem}
+          </button>
+        </div>
+
+        {showIngredientPanel && (
+        <div className="bg-surface-low border border-outline-variant/10 rounded-sm p-4 space-y-3">
+          <h4 className="font-headline text-lg font-bold">{labels.addIngredient}</h4>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+            <input
+              className="bg-background/60 px-3 py-2 rounded-sm outline-none"
+              placeholder={labels.ingredientName}
+              value={newIngredient.name}
+              onChange={(event) => setNewIngredient((prev) => ({ ...prev, name: event.target.value }))}
+            />
+            <label className="block text-xs text-on-surface/70 bg-background/60 px-3 py-2 rounded-sm">
+              {labels.uploadImage}
+              <input
+                className="mt-1 w-full bg-background/30 px-2 py-1 rounded-sm outline-none file:mr-3 file:px-3 file:py-1 file:rounded-sm file:border-0 file:bg-surface-high file:text-on-surface"
+                type="file"
+                accept="image/*"
+                onChange={(event) => setNewIngredientImageFile(event.target.files?.[0] ?? null)}
+              />
+            </label>
+            <input
+              className="bg-background/60 px-3 py-2 rounded-sm outline-none"
+              placeholder={labels.ingredientStock}
+              type="number"
+              min="0"
+              value={newIngredient.stock}
+              onChange={(event) => setNewIngredient((prev) => ({ ...prev, stock: Number(event.target.value) }))}
+            />
+            <input
+              className="bg-background/60 px-3 py-2 rounded-sm outline-none"
+              placeholder={labels.ingredientUnitCost}
+              type="number"
+              min="0"
+              value={newIngredient.unitCost}
+              onChange={(event) => setNewIngredient((prev) => ({ ...prev, unitCost: Number(event.target.value) }))}
+            />
+          </div>
+          <button
+            onClick={submitNewIngredient}
+            disabled={isSubmittingIngredient}
+            className="bg-neon-gradient text-on-primary-fixed px-6 py-2 rounded-sm font-bold disabled:opacity-60"
+          >
+            {isSubmittingIngredient ? labels.uploading : labels.addIngredient}
+          </button>
+        </div>
+        )}
+      </div>
+
+      <div className="grid grid-cols-2 lg:grid-cols-5 gap-3">
+        <SummaryCard title={labels.totalSkus} value={summary.totalSkus.toLocaleString()} />
+        <SummaryCard title={labels.totalUnits} value={summary.totalUnits.toLocaleString()} />
+        <SummaryCard title={labels.lowStock} value={summary.lowStock.toLocaleString()} />
+        <SummaryCard title={labels.outOfStock} value={summary.outOfStock.toLocaleString()} />
+        <SummaryCard title={labels.inventoryValue} value={formatMoney(summary.inventoryValue)} />
+      </div>
+
+      <div className="grid grid-cols-1 xl:grid-cols-1 gap-6">
+        <div className="xl:col-span-1 bg-surface-low p-1 rounded-sm overflow-x-auto border border-outline-variant/10">
         <table className="w-full text-left border-collapse">
           <thead>
             <tr className="bg-surface-high">
@@ -1220,10 +2441,11 @@ const MenuView = ({
               <th className="px-6 py-4 font-mono text-[10px] font-bold uppercase tracking-widest text-primary/60 text-right">{labels.price}</th>
               <th className="px-6 py-4 font-mono text-[10px] font-bold uppercase tracking-widest text-primary/60 text-center">{labels.stock}</th>
               <th className="px-6 py-4 font-mono text-[10px] font-bold uppercase tracking-widest text-primary/60 text-center">{labels.status}</th>
+              <th className="px-6 py-4 font-mono text-[10px] font-bold uppercase tracking-widest text-primary/60 text-center">{labels.remove}</th>
             </tr>
           </thead>
           <tbody className="divide-y divide-outline-variant/5">
-            {menuItems.map((item) => (
+            {filteredItems.map((item) => (
               <tr key={item.id} className="hover:bg-surface-high transition-colors group">
                 <td className="px-6 py-5">
                   <div className="flex items-center gap-4">
@@ -1237,48 +2459,463 @@ const MenuView = ({
                   </div>
                 </td>
                 <td className="px-6 py-5 text-center">
-                  <span className="text-[10px] font-bold font-mono uppercase tracking-widest bg-surface-highest px-3 py-1 rounded-full text-on-surface/60">{item.category}</span>
+                  <select
+                    className="w-28 bg-background/60 text-center rounded-sm px-2 py-1 text-xs outline-none"
+                    value={item.category}
+                    onChange={(event) => onUpdateMenuMeta(item.id, { category: event.target.value })}
+                  >
+                    {categoryOptions.map((category) => (
+                      <option key={category} value={category}>
+                        {category}
+                      </option>
+                    ))}
+                  </select>
                 </td>
-                <td className="px-6 py-5 text-right font-mono text-sm text-on-surface/60">¥{item.cost.toLocaleString()}</td>
-                <td className="px-6 py-5 text-right font-mono text-sm font-bold text-secondary">¥{item.price.toLocaleString()}</td>
+                <td className="px-6 py-5 text-right font-mono text-sm text-on-surface/60">
+                  <input
+                    className="w-24 bg-background/40 text-right rounded-sm px-2 py-1 text-xs outline-none cursor-not-allowed opacity-80"
+                    type="number"
+                    min="0"
+                    value={item.cost}
+                    readOnly
+                    title={labels.recipeCost}
+                    aria-label={labels.recipeCost}
+                    onFocus={(event) => event.currentTarget.select()}
+                  />
+                </td>
+                <td className="px-6 py-5 text-right font-mono text-sm font-bold text-secondary">
+                  <input
+                    className="w-24 bg-background/60 text-right rounded-sm px-2 py-1 text-xs outline-none"
+                    type="number"
+                    min="0"
+                    value={item.price}
+                    onChange={(event) => onUpdateMenuMeta(item.id, { price: Number(event.target.value) })}
+                  />
+                </td>
                 <td className="px-6 py-5 text-center font-mono text-sm">
                   <div className="flex items-center justify-center gap-2">
                     <button
-                      onClick={() => onChangeStock(item.id, Math.max(0, item.stock - 1))}
+                      onClick={() => onChangeStock(item.id, Math.max(0, item.stock - 1), labels.consume)}
                       className="w-5 h-5 bg-surface-high rounded-sm text-on-surface/60 hover:text-primary"
                     >
                       -
                     </button>
                     <span>{item.stock}</span>
                     <button
-                      onClick={() => onChangeStock(item.id, item.stock + 1)}
+                      onClick={() => onChangeStock(item.id, item.stock + 1, labels.restock)}
                       className="w-5 h-5 bg-surface-high rounded-sm text-on-surface/60 hover:text-primary"
                     >
                       +
+                    </button>
+                    <button
+                      onClick={() => onChangeStock(item.id, item.stock + 5, labels.restock)}
+                      className="px-2 h-5 bg-surface-high rounded-sm text-[10px] font-bold text-on-surface/60 hover:text-primary"
+                    >
+                      {labels.quickAdd5}
+                    </button>
+                    <button
+                      onClick={() => onChangeStock(item.id, Math.max(0, item.stock - 5), labels.consume)}
+                      className="px-2 h-5 bg-surface-high rounded-sm text-[10px] font-bold text-on-surface/60 hover:text-primary"
+                    >
+                      {labels.quickMinus5}
                     </button>
                   </div>
                 </td>
                 <td className="px-6 py-5">
                   <div className="flex justify-center">
-                    <div className={cn(
-                      "w-10 h-5 rounded-full relative p-1 cursor-pointer transition-colors",
-                      item.stock > 10 ? "bg-primary/20" : "bg-error/20"
-                    )}>
-                      <div className={cn(
-                        "absolute top-1 w-3 h-3 rounded-full transition-all",
-                        item.stock > 10 ? "right-1 bg-primary" : "left-1 bg-error"
-                      )}></div>
-                    </div>
+                    <button
+                      onClick={() => onToggleMenuActive(item.id, !item.active)}
+                      className={cn(
+                        'text-[10px] font-bold uppercase tracking-widest px-2 py-1 rounded-full',
+                        item.active ? 'bg-primary/15 text-primary' : 'bg-error/20 text-error',
+                      )}
+                      title={item.active ? 'Selling' : 'Disabled'}
+                    >
+                      {item.active ? labels.statusAvailable : labels.statusOut}
+                    </button>
                   </div>
+                </td>
+                <td className="px-6 py-5 text-center">
+                  <button
+                    onClick={() => {
+                      const ok = window.confirm(`${labels.remove}: ${item.name}?`);
+                      if (!ok) return;
+                      onDeleteMenuItem(item.id);
+                    }}
+                    className="w-8 h-7 bg-surface-high rounded-sm text-on-surface/60 hover:text-error font-bold"
+                    title={labels.remove}
+                  >
+                    ×
+                  </button>
                 </td>
               </tr>
             ))}
+            {filteredItems.length === 0 && (
+              <tr>
+                <td colSpan={7} className="px-6 py-10 text-center text-sm text-on-surface/50">
+                  {labels.noItemsFound}
+                </td>
+              </tr>
+            )}
           </tbody>
         </table>
+        </div>
+
+
+
+          <div className="bg-surface-low border border-outline-variant/10 rounded-sm p-5 space-y-6">
+            <div>
+              <h4 className="font-headline text-xl font-black uppercase tracking-tight mb-1">{labels.recipeBuilder}</h4>
+              {selectedMenu ? (
+                <p className="text-[10px] text-primary font-bold uppercase tracking-widest">{selectedMenu.name}</p>
+              ) : (
+                <p className="text-[10px] text-on-surface/40 uppercase tracking-widest">{labels.selectMenu}</p>
+              )}
+            </div>
+
+            {selectedMenu && (
+              <div className="space-y-6">
+                <div className="flex gap-2 p-1 bg-background/60 rounded-sm">
+                  <select
+                    className="flex-1 bg-background/10 px-3 py-2 rounded-sm text-xs outline-none"
+                    value={selectedIngredientId}
+                    onChange={(event) => setSelectedIngredientId(event.target.value)}
+                  >
+                    <option value="" disabled>{labels.selectIngredient}</option>
+                    {ingredients.map((ing) => (
+                      <option key={ing.id} value={ing.id}>{ing.name} ({formatMoney(ing.unitCost)}/{ing.unit})</option>
+                    ))}
+                  </select>
+                  <div className="w-24">
+                    <input
+                      type="number"
+                      min="0.01"
+                      step="0.01"
+                      className="w-full bg-background/10 px-3 py-2 rounded-sm text-xs outline-none text-right font-mono"
+                      placeholder="Qty"
+                      value={recipeQty}
+                      onChange={(event) => setRecipeQty(Number(event.target.value))}
+                    />
+                  </div>
+                  <button
+                    onClick={addIngredientToRecipe}
+                    className="bg-primary text-on-primary-fixed px-5 py-2 rounded-sm text-[10px] font-black uppercase tracking-tighter hover:brightness-110 active:scale-95 transition-all shadow-lg shadow-primary/20"
+                  >
+                    {labels.addToRecipe}
+                  </button>
+                </div>
+
+                <div className="space-y-2 border-t border-outline-variant/10 pt-4">
+                  <div className="flex justify-between items-center px-4 mb-2">
+                    <span className="text-[10px] font-bold uppercase tracking-[0.2em] text-on-surface/40 font-mono">{labels.recipeItems}</span>
+                    <span className="text-[10px] font-bold uppercase tracking-[0.2em] text-on-surface/40 font-mono text-right lg:mr-10">{labels.cost}</span>
+                  </div>
+                  <div className="space-y-1.5 max-h-[300px] overflow-y-auto custom-scrollbar pr-2">
+                    {recipeLines.map((line) => {
+                      const ing = ingredientMap.get(line.ingredientId);
+                      const lineCost = (ing?.unitCost ?? 0) * line.quantity;
+                      return (
+                        <div key={line.ingredientId} className="flex justify-between items-center bg-background/40 hover:bg-surface-high px-4 py-3 rounded-sm group transition-colors border border-outline-variant/10">
+                          <div className="flex items-center gap-4">
+                            <div className="w-10 h-10 rounded-sm bg-background border border-outline-variant/20 overflow-hidden">
+                              <img src={ing?.image} className="w-full h-full object-cover" alt="" />
+                            </div>
+                            <div>
+                              <p className="text-xs font-bold leading-tight">{ing?.name || 'Unknown'}</p>
+                              <p className="text-[10px] text-on-surface/60 mt-1 font-mono">
+                                {line.quantity} {ing?.unit} <span className="text-on-surface/30">×</span> {formatMoney(ing?.unitCost ?? 0)}
+                              </p>
+                            </div>
+                          </div>
+                          <div className="flex items-center gap-4">
+                            <p className="text-xs font-mono font-black text-secondary">{formatMoney(lineCost)}</p>
+                            <button
+                              onClick={() => onUpsertRecipeLine({ menuId: selectedMenuId, ingredientId: line.ingredientId, quantity: 0 })}
+                              className="bg-error/10 text-error hover:bg-error/25 w-7 h-7 rounded-sm flex items-center justify-center text-sm font-bold opacity-30 group-hover:opacity-100 transition-opacity"
+                              title={labels.remove}
+                            >
+                              ×
+                            </button>
+                          </div>
+                        </div>
+                      );
+                    })}
+                    {recipeLines.length === 0 && (
+                      <div className="text-center py-12 border-2 border-dashed border-outline-variant/20 rounded-sm">
+                        <p className="text-[10px] uppercase font-black tracking-[0.3em] text-on-surface/20">{labels.cartEmpty}</p>
+                      </div>
+                    )}
+                  </div>
+                </div>
+
+                <div className="mt-8 space-y-3 pt-6 border-t border-outline-variant/20">
+                  <div className="flex justify-between items-end border-b border-outline-variant/10 pb-3">
+                    <span className="text-xs font-bold text-on-surface/60 uppercase tracking-widest font-headline">{labels.recipeCost}</span>
+                    <span className="text-2xl font-black text-secondary font-headline italic tracking-tighter drop-shadow-[0_0_10px_rgba(233,195,73,0.3)]">{formatMoney(recipeCost)}</span>
+                  </div>
+                  <div className="flex justify-between items-end border-b border-outline-variant/10 pb-3">
+                    <span className="text-xs font-bold text-on-surface/60 uppercase tracking-widest font-headline">{labels.price}</span>
+                    <span className="text-2xl font-black text-primary font-headline italic tracking-tighter">{formatMoney(selectedMenu.price)}</span>
+                  </div>
+                  <div className="flex justify-between items-end bg-neon-gradient/5 p-4 rounded-sm border border-primary/20">
+                    <span className="text-xs font-black text-primary uppercase tracking-[0.2em] font-headline">{labels.margin}</span>
+                    <div className="text-right">
+                      <p className="text-3xl font-black text-on-primary-fixed font-headline italic tracking-tighter drop-shadow-[0_0_15px_rgba(255,82,92,0.4)]">{formatMoney(menuMargin)}</p>
+                      <p className="text-[10px] font-mono text-primary font-bold">({((menuMargin / (selectedMenu.price || 1)) * 100).toFixed(1)}%)</p>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            )}
+          </div>
       </div>
     </div>
   );
 };
+
+const IngredientsView = ({
+  ingredients,
+  onAddIngredient,
+  onUpdateIngredient,
+  onDeleteIngredient,
+  labels,
+  formatMoney,
+}: {
+  ingredients: IngredientItem[];
+  onAddIngredient: (payload: {
+    name: string;
+    unit: string;
+    unitCost: number;
+    stock: number;
+    category?: string;
+    imageFile?: File | null;
+  }) => Promise<void>;
+  onUpdateIngredient: (
+    ingredientId: string,
+    patch: Partial<Pick<IngredientItem, 'name' | 'category' | 'stock' | 'unitCost'>>,
+  ) => void;
+  onDeleteIngredient: (ingredientId: string) => Promise<void>;
+  labels: typeof TEXT.en;
+  formatMoney: (value: number) => string;
+}) => {
+  const [newIngredient, setNewIngredient] = useState({
+    name: '',
+    unitCost: 0,
+    stock: 0,
+  });
+  const [newIngredientImageFile, setNewIngredientImageFile] = useState<File | null>(null);
+  const [isSubmittingIngredient, setIsSubmittingIngredient] = useState(false);
+  const [searchTerm, setSearchTerm] = useState('');
+
+  const filteredIngredients = useMemo(() => {
+    const keyword = searchTerm.trim().toLowerCase();
+    if (!keyword) return ingredients;
+    return ingredients.filter((item) => item.name.toLowerCase().includes(keyword));
+  }, [ingredients, searchTerm]);
+
+  const stockStatus = (stock: number) => {
+    if (stock <= 0) return { label: labels.statusOut, cls: 'bg-error/20 text-error' };
+    if (stock <= 10) return { label: labels.statusLow, cls: 'bg-secondary/20 text-secondary' };
+    return { label: labels.statusAvailable, cls: 'bg-primary/15 text-primary' };
+  };
+
+  const submitNewIngredient = async () => {
+    if (!newIngredient.name.trim()) return;
+    setIsSubmittingIngredient(true);
+    try {
+      await onAddIngredient({
+        name: newIngredient.name.trim(),
+        unit: 'unit',
+        unitCost: Math.max(0, newIngredient.unitCost),
+        stock: Math.max(0, Math.floor(newIngredient.stock)),
+        imageFile: newIngredientImageFile,
+      });
+      setNewIngredient({ name: '', unitCost: 0, stock: 0 });
+      setNewIngredientImageFile(null);
+    } finally {
+      setIsSubmittingIngredient(false);
+    }
+  };
+
+  return (
+    <div className="p-4 lg:p-8 space-y-8 animate-in fade-in duration-500">
+      <div>
+        <p className="font-mono text-primary text-sm font-bold uppercase tracking-[0.2em] mb-2">{labels.inventoryControl}</p>
+        <h3 className="font-headline font-black text-4xl text-on-surface leading-none uppercase">{labels.inventoryIngredients}</h3>
+      </div>
+
+      <div className="bg-surface-low border border-outline-variant/10 rounded-sm p-4 space-y-3">
+        <h4 className="font-headline text-lg font-bold">{labels.addIngredient}</h4>
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+          <div className="bg-background/60 px-3 py-2 rounded-sm">
+            <div className="flex items-center justify-between mb-1">
+              <span className="text-xs font-semibold">{labels.ingredientName}</span>
+              <span className="text-[10px] text-on-surface/55">{labels.fieldHintName}</span>
+            </div>
+            <input
+              className="w-full bg-background/30 px-2 py-1 rounded-sm outline-none"
+              placeholder={labels.ingredientName}
+              value={newIngredient.name}
+              onChange={(event) => setNewIngredient((prev) => ({ ...prev, name: event.target.value }))}
+            />
+          </div>
+
+          <label className="block bg-background/60 px-3 py-2 rounded-sm">
+            <div className="flex items-center justify-between mb-1">
+              <span className="text-xs font-semibold">{labels.uploadImage}</span>
+              <span className="text-[10px] text-on-surface/55">{labels.fieldHintImage}</span>
+            </div>
+            <input
+              className="w-full bg-background/30 px-2 py-1 rounded-sm outline-none file:mr-3 file:px-3 file:py-1 file:rounded-sm file:border-0 file:bg-surface-high file:text-on-surface"
+              type="file"
+              accept="image/*"
+              onChange={(event) => setNewIngredientImageFile(event.target.files?.[0] ?? null)}
+            />
+          </label>
+          <div className="bg-background/60 px-3 py-2 rounded-sm">
+            <div className="flex items-center justify-between mb-1">
+              <span className="text-xs font-semibold">{labels.ingredientStock}</span>
+              <span className="text-[10px] text-on-surface/55">{labels.fieldHintStock}</span>
+            </div>
+            <input
+              className="w-full bg-background/30 px-2 py-1 rounded-sm outline-none"
+              placeholder={labels.ingredientStock}
+              type="number"
+              min="0"
+              value={newIngredient.stock}
+              onChange={(event) => setNewIngredient((prev) => ({ ...prev, stock: Number(event.target.value) }))}
+            />
+          </div>
+          <div className="bg-background/60 px-3 py-2 rounded-sm">
+            <div className="flex items-center justify-between mb-1">
+              <span className="text-xs font-semibold">{labels.ingredientUnitCost}</span>
+              <span className="text-[10px] text-on-surface/55">{labels.fieldHintCost}</span>
+            </div>
+            <input
+              className="w-full bg-background/30 px-2 py-1 rounded-sm outline-none"
+              placeholder={labels.ingredientUnitCost}
+              type="number"
+              min="0"
+              value={newIngredient.unitCost}
+              onChange={(event) => setNewIngredient((prev) => ({ ...prev, unitCost: Number(event.target.value) }))}
+            />
+          </div>
+        </div>
+        <button
+          onClick={submitNewIngredient}
+          disabled={isSubmittingIngredient}
+          className="bg-neon-gradient text-on-primary-fixed px-6 py-2 rounded-sm font-bold disabled:opacity-60"
+        >
+          {isSubmittingIngredient ? labels.uploading : labels.addIngredient}
+        </button>
+      </div>
+
+      <div className="bg-surface-low border border-outline-variant/10 rounded-sm p-4">
+        <div className="relative w-full md:w-96 mb-4">
+          <Search className="absolute left-4 top-1/2 -translate-y-1/2 text-on-surface/40 w-4 h-4" />
+          <input
+            className="w-full bg-background/60 border-none focus:ring-1 focus:ring-primary text-on-surface pl-10 pr-4 py-3 text-xs font-mono rounded-sm tracking-widest uppercase transition-all"
+            placeholder={labels.searchProducts}
+            value={searchTerm}
+            onChange={(event) => setSearchTerm(event.target.value)}
+            type="text"
+          />
+        </div>
+        <div className="overflow-x-auto">
+          <table className="w-full text-left border-collapse">
+            <thead>
+              <tr className="bg-surface-high">
+                <th className="px-4 py-3 font-mono text-[10px] font-bold uppercase tracking-widest text-primary/60">{labels.ingredientName}</th>
+
+                <th className="px-4 py-3 font-mono text-[10px] font-bold uppercase tracking-widest text-primary/60 text-right">{labels.ingredientUnitCost}</th>
+                <th className="px-4 py-3 font-mono text-[10px] font-bold uppercase tracking-widest text-primary/60 text-center">{labels.ingredientStock}</th>
+                <th className="px-4 py-3 font-mono text-[10px] font-bold uppercase tracking-widest text-primary/60 text-center">{labels.status}</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-outline-variant/5">
+              {filteredIngredients.map((item) => (
+                <tr key={item.id} className="hover:bg-surface-high transition-colors">
+                  <td className="px-4 py-4">
+                    <div className="flex items-center gap-3">
+                      <div className="w-10 h-10 bg-background rounded-sm overflow-hidden">
+                        <img src={item.image} alt={item.name} className="w-full h-full object-cover" referrerPolicy="no-referrer" />
+                      </div>
+                      <input
+                        className="bg-background/40 px-2 py-1 rounded-sm outline-none text-sm font-semibold w-56 max-w-full"
+                        value={item.name}
+                        onChange={(event) => onUpdateIngredient(item.id, { name: event.target.value })}
+                      />
+                    </div>
+                  </td>
+
+                  <td className="px-4 py-4 text-right">
+                    <input
+                      className="w-28 bg-background/60 text-right rounded-sm px-2 py-1 text-xs outline-none"
+                      type="number"
+                      min="0"
+                      value={item.unitCost}
+                      onChange={(event) => onUpdateIngredient(item.id, { unitCost: Number(event.target.value) })}
+                    />
+                  </td>
+                  <td className="px-4 py-4 text-center">
+                    <div className="flex items-center justify-center gap-2">
+                      <button
+                        onClick={() => onUpdateIngredient(item.id, { stock: Math.max(0, item.stock - 1) })}
+                        className="w-5 h-5 bg-surface-high rounded-sm text-on-surface/60 hover:text-primary"
+                      >
+                        -
+                      </button>
+                      <span className="font-mono">{item.stock}</span>
+                      <button
+                        onClick={() => onUpdateIngredient(item.id, { stock: item.stock + 1 })}
+                        className="w-5 h-5 bg-surface-high rounded-sm text-on-surface/60 hover:text-primary"
+                      >
+                        +
+                      </button>
+                    </div>
+                  </td>
+                  <td className="px-4 py-4 text-center">
+                    <div className="flex items-center justify-center gap-2">
+                      <span className={cn('text-[10px] font-bold uppercase tracking-widest px-2 py-1 rounded-full', stockStatus(item.stock).cls)}>
+                        {stockStatus(item.stock).label}
+                      </span>
+                      <button
+                        onClick={() => {
+                          const ok = window.confirm(`${labels.remove}: ${item.name}?`);
+                          if (!ok) return;
+                          onDeleteIngredient(item.id);
+                        }}
+                        className="w-8 h-7 bg-surface-high rounded-sm text-on-surface/60 hover:text-error font-bold"
+                        title={labels.remove}
+                      >
+                        ×
+                      </button>
+                    </div>
+                  </td>
+                </tr>
+              ))}
+              {filteredIngredients.length === 0 && (
+                <tr>
+                  <td colSpan={4} className="px-4 py-8 text-center text-sm text-on-surface/50">
+                    {labels.noItemsFound}
+                  </td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+        <p className="text-xs text-on-surface/50 mt-3">{labels.inventoryValue}: {formatMoney(filteredIngredients.reduce((sum, item) => sum + item.stock * item.unitCost, 0))}</p>
+      </div>
+    </div>
+  );
+};
+
+const SummaryCard = ({ title, value }: { title: string; value: string }) => (
+  <div className="bg-surface-low border border-outline-variant/10 rounded-sm px-4 py-3">
+    <p className="text-[10px] uppercase tracking-widest text-on-surface/50 font-mono">{title}</p>
+    <p className="font-headline font-black text-xl text-on-surface mt-1">{value}</p>
+  </div>
+);
 
 const SettingsView = ({
   labels,
@@ -1290,6 +2927,9 @@ const SettingsView = ({
   onDeleteStaff,
   onCreateStaffAccount,
   accountMap,
+  trucks,
+  onUpsertTruck,
+  onDeleteTruck,
 }: {
   labels: typeof TEXT.en;
   staffMembers: StaffMember[];
@@ -1300,6 +2940,9 @@ const SettingsView = ({
   onDeleteStaff: (staffId: string) => Promise<void>;
   onCreateStaffAccount: (payload: { staffId: string; username: string }) => Promise<string>;
   accountMap: Map<string, string>;
+  trucks: Truck[];
+  onUpsertTruck: (truck: Truck) => Promise<void>;
+  onDeleteTruck: (truckId: string) => Promise<void>;
 }) => {
   const roleLabels: Record<StaffRole, string> = {
     Manager: labels.manager,
@@ -1307,6 +2950,7 @@ const SettingsView = ({
     Kitchen: labels.kitchenRole,
   };
 
+  const [activeSettingsTab, setActiveSettingsTab] = useState<'staff' | 'permissions' | 'trucks'>('staff');
   const [selectedStaffId, setSelectedStaffId] = useState(staffMembers[0]?.id ?? '');
   const [activeRole, setActiveRole] = useState<StaffRole>('Manager');
   const [newStaffName, setNewStaffName] = useState('');
@@ -1316,6 +2960,10 @@ const SettingsView = ({
   const [usernameInput, setUsernameInput] = useState('');
   const [generatedPassword, setGeneratedPassword] = useState('');
   const [accountMessage, setAccountMessage] = useState('');
+
+  // Truck states
+  const [newTruckName, setNewTruckName] = useState('');
+  const [newTruckLocation, setNewTruckLocation] = useState('');
 
   useEffect(() => {
     setDraftPermissions(permissionMatrix);
@@ -1423,91 +3071,124 @@ const SettingsView = ({
         </div>
       </div>
 
-      <div className="grid grid-cols-1 lg:grid-cols-12 gap-8">
-        <section className="lg:col-span-4 bg-surface-low p-6 rounded-sm space-y-6 border border-outline-variant/10">
-          <div className="flex justify-between items-center">
-            <h4 className="font-headline text-lg font-bold">{labels.activeStaff}</h4>
-            <span className="font-mono text-xs text-primary bg-primary/10 px-2 py-1 rounded-full">
-              {staffMembers.length} {labels.members}
-            </span>
-          </div>
-          <div className="space-y-3 max-h-[60vh] overflow-y-auto custom-scrollbar pr-1">
-            {staffMembers.map((staff) => (
-              <button
-                key={staff.id}
-                onClick={() => setSelectedStaffId(staff.id)}
-                className={cn(
-                  "w-full text-left group flex items-center p-3 rounded-sm bg-surface-high transition-all hover:translate-x-1 cursor-pointer border",
-                  selectedStaffId === staff.id ? "border-primary/40" : "border-transparent",
-                )}
-              >
-                <img
-                  src={staff.image}
-                  alt={staff.name}
-                  className="w-12 h-12 rounded-sm object-cover mr-4 grayscale group-hover:grayscale-0 transition-all"
-                  referrerPolicy="no-referrer"
-                />
-                <div className="flex-1">
-                  <p className="font-bold text-on-surface">{staff.name}</p>
-                  <p className="font-mono text-xs text-on-surface/40">{roleLabels[staff.role]}</p>
-                </div>
-                <ArrowRight className={cn("w-4 h-4", selectedStaffId === staff.id ? "text-primary" : "text-on-surface/20")} />
-              </button>
-            ))}
-          </div>
+      <div className="flex space-x-6 border-b border-outline-variant/10 mb-8">
+        <button 
+          onClick={() => setActiveSettingsTab('staff')}
+          className={cn("px-4 py-2 text-sm font-bold border-b-2 transition-all", activeSettingsTab === 'staff' ? "border-primary text-primary" : "border-transparent text-on-surface/40 hover:text-on-surface")}
+        >
+          {labels.activeStaff}
+        </button>
+        <button 
+          onClick={() => setActiveSettingsTab('permissions')}
+          className={cn("px-4 py-2 text-sm font-bold border-b-2 transition-all", activeSettingsTab === 'permissions' ? "border-primary text-primary" : "border-transparent text-on-surface/40 hover:text-on-surface")}
+        >
+          {labels.posPermission}
+        </button>
+        <button 
+          onClick={() => setActiveSettingsTab('trucks')}
+          className={cn("px-4 py-2 text-sm font-bold border-b-2 transition-all", activeSettingsTab === 'trucks' ? "border-primary text-primary" : "border-transparent text-on-surface/40 hover:text-on-surface")}
+        >
+          Operating Trucks
+        </button>
+      </div>
 
-          {selectedStaff && (
-            <div className="pt-4 border-t border-outline-variant/10">
-              <p className="text-xs text-on-surface/50 mb-2">{selectedStaff.name}</p>
-              <div className="grid grid-cols-3 gap-2">
-                {(['Manager', 'Server', 'Kitchen'] as StaffRole[]).map((role) => (
-                  <button
-                    key={role}
-                    onClick={() => onChangeStaffRole(selectedStaff.id, role)}
-                    className={cn(
-                      "text-xs px-2 py-2 rounded-sm font-bold",
-                      selectedStaff.role === role ? "bg-primary text-on-primary-fixed" : "bg-surface-highest text-on-surface/70",
-                    )}
-                  >
-                    {roleLabels[role]}
-                  </button>
-                ))}
-              </div>
-              <div className="mt-4 space-y-2">
-                <p className="text-xs text-on-surface/50">
-                  {labels.username}: <span className="font-mono text-on-surface">{selectedUsername || '-'}</span>
-                </p>
-                <input
-                  value={usernameInput}
-                  onChange={(event) => setUsernameInput(event.target.value)}
-                  placeholder={labels.username}
-                  className="w-full bg-surface-high text-on-surface px-3 py-2 rounded-sm outline-none"
-                />
-                <button
-                  onClick={handleCreateAccount}
-                  className="w-full bg-neon-gradient text-on-primary-fixed px-4 py-2 rounded-sm text-sm font-bold"
-                >
-                  {labels.createAccount}
-                </button>
-                {generatedPassword && (
-                  <div className="text-xs bg-background/60 border border-outline-variant/20 rounded-sm p-2">
-                    <span className="text-on-surface/60">{labels.generatedPassword}: </span>
-                    <span className="font-mono text-secondary">{generatedPassword}</span>
-                  </div>
-                )}
-                {accountMessage && <p className="text-xs text-secondary">{accountMessage}</p>}
-                <button
-                  onClick={handleDelete}
-                  className="w-full bg-error/20 text-error px-4 py-2 rounded-sm text-sm font-bold"
-                >
-                  {labels.deleteStaff}
-                </button>
-              </div>
+      {activeSettingsTab === 'staff' && (
+        <div className="grid grid-cols-1 lg:grid-cols-12 gap-8 animate-in fade-in duration-300">
+          <section className="lg:col-span-4 bg-surface-low p-6 rounded-sm space-y-6 border border-outline-variant/10">
+            <div className="flex justify-between items-center">
+              <h4 className="font-headline text-lg font-bold">{labels.activeStaff}</h4>
+              <span className="font-mono text-xs text-primary bg-primary/10 px-2 py-1 rounded-full">
+                {staffMembers.length} {labels.members}
+              </span>
             </div>
-          )}
-        </section>
+            <div className="space-y-3 max-h-[60vh] overflow-y-auto custom-scrollbar pr-1">
+              {staffMembers.map((staff) => (
+                <button
+                  key={staff.id}
+                  onClick={() => setSelectedStaffId(staff.id)}
+                  className={cn(
+                    "w-full text-left group flex items-center p-3 rounded-sm bg-surface-high transition-all hover:translate-x-1 cursor-pointer border",
+                    selectedStaffId === staff.id ? "border-primary/40" : "border-transparent",
+                  )}
+                >
+                  <img
+                    src={staff.image}
+                    alt={staff.name}
+                    className="w-12 h-12 rounded-sm object-cover mr-4 grayscale group-hover:grayscale-0 transition-all"
+                    referrerPolicy="no-referrer"
+                  />
+                  <div className="flex-1">
+                    <p className="font-bold text-on-surface">{staff.name}</p>
+                    <p className="font-mono text-xs text-on-surface/40">{roleLabels[staff.role]}</p>
+                  </div>
+                  <ArrowRight className={cn("w-4 h-4", selectedStaffId === staff.id ? "text-primary" : "text-on-surface/20")} />
+                </button>
+              ))}
+            </div>
 
-        <section className="lg:col-span-8 space-y-8">
+            {selectedStaff && (
+              <div className="pt-4 border-t border-outline-variant/10">
+                <p className="text-xs text-on-surface/50 mb-2">{selectedStaff.name}</p>
+                <div className="grid grid-cols-3 gap-2">
+                  {(['Manager', 'Server', 'Kitchen'] as StaffRole[]).map((role) => (
+                    <button
+                      key={role}
+                      onClick={() => onChangeStaffRole(selectedStaff.id, role)}
+                      className={cn(
+                        "text-xs px-2 py-2 rounded-sm font-bold",
+                        selectedStaff.role === role ? "bg-primary text-on-primary-fixed" : "bg-surface-highest text-on-surface/70",
+                      )}
+                    >
+                      {roleLabels[role]}
+                    </button>
+                  ))}
+                </div>
+                <div className="mt-4 space-y-2">
+                  <p className="text-xs text-on-surface/50">
+                    {labels.username}: <span className="font-mono text-on-surface">{selectedUsername || '-'}</span>
+                  </p>
+                  <input
+                    value={usernameInput}
+                    onChange={(event) => setUsernameInput(event.target.value)}
+                    placeholder={labels.username}
+                    className="w-full bg-surface-high text-on-surface px-3 py-2 rounded-sm outline-none"
+                  />
+                  <button
+                    onClick={handleCreateAccount}
+                    className="w-full bg-neon-gradient text-on-primary-fixed px-4 py-2 rounded-sm text-sm font-bold"
+                  >
+                    {labels.createAccount}
+                  </button>
+                  {generatedPassword && (
+                    <div className="text-xs bg-background/60 border border-outline-variant/20 rounded-sm p-2">
+                      <span className="text-on-surface/60">{labels.generatedPassword}: </span>
+                      <span className="font-mono text-secondary">{generatedPassword}</span>
+                    </div>
+                  )}
+                  {accountMessage && <p className="text-xs text-secondary">{accountMessage}</p>}
+                  <button
+                    onClick={handleDelete}
+                    className="w-full bg-error/20 text-error px-4 py-2 rounded-sm text-sm font-bold"
+                  >
+                    {labels.deleteStaff}
+                  </button>
+                </div>
+              </div>
+            )}
+          </section>
+
+          <section className="lg:col-span-8 bg-surface-low p-8 border border-outline-variant/10 rounded-sm">
+             <div className="flex flex-col items-center justify-center p-20 text-center space-y-4 opacity-40">
+                <User className="w-16 h-16" />
+                <h3 className="font-headline text-2xl font-black">Staff Management</h3>
+                <p className="text-sm max-w-xs">Select a staff member from the left to manage their role and account credentials.</p>
+             </div>
+          </section>
+        </div>
+      )}
+
+      {activeSettingsTab === 'permissions' && (
+        <section className="space-y-8 animate-in fade-in duration-300">
           <div className="flex space-x-1 bg-background p-1 rounded-sm border border-outline-variant/10">
             {(['Manager', 'Server', 'Kitchen'] as StaffRole[]).map((role) => (
               <button
@@ -1561,7 +3242,72 @@ const SettingsView = ({
             </button>
           </div>
         </section>
-      </div>
+      )}
+
+      {activeSettingsTab === 'trucks' && (
+        <div className="grid grid-cols-1 lg:grid-cols-12 gap-8 animate-in fade-in duration-300">
+           <section className="lg:col-span-4 bg-surface-low p-8 rounded-sm space-y-6 border border-outline-variant/10">
+              <h4 className="font-headline text-lg font-bold">New Operating Truck</h4>
+              <div className="space-y-4">
+                 <div>
+                    <label className="text-[10px] uppercase font-black tracking-widest text-on-surface/40 mb-1 block">Truck Name</label>
+                    <input 
+                       value={newTruckName}
+                       onChange={e => setNewTruckName(e.target.value)}
+                       placeholder="e.g. Truck #01"
+                       className="w-full bg-surface-high text-on-surface px-4 py-3 rounded-sm outline-none"
+                    />
+                 </div>
+                 <div>
+                    <label className="text-[10px] uppercase font-black tracking-widest text-on-surface/40 mb-1 block">Location</label>
+                    <input 
+                       value={newTruckLocation}
+                       onChange={e => setNewTruckLocation(e.target.value)}
+                       placeholder="e.g. Shibuya Crossing"
+                       className="w-full bg-surface-high text-on-surface px-4 py-3 rounded-sm outline-none"
+                    />
+                 </div>
+                 <button 
+                    onClick={() => {
+                       if (!newTruckName) return;
+                       onUpsertTruck({ id: `truck-${Date.now()}`, name: newTruckName, location: newTruckLocation, active: true });
+                       setNewTruckName('');
+                       setNewTruckLocation('');
+                    }}
+                    className="w-full bg-neon-gradient text-on-primary-fixed px-6 py-4 rounded-sm font-black uppercase text-[10px] tracking-[0.3em]"
+                 >
+                    Register Truck
+                 </button>
+              </div>
+           </section>
+
+           <section className="lg:col-span-8 bg-surface-low p-8 border border-outline-variant/10 rounded-sm">
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                 {trucks.map(truck => (
+                    <div key={truck.id} className="p-6 bg-surface-high rounded-sm border border-outline-variant/10 flex justify-between items-center group">
+                       <div>
+                          <p className="font-headline font-black text-xl italic uppercase tracking-tighter">{truck.name}</p>
+                          <p className="text-xs text-on-surface/50">{truck.location}</p>
+                       </div>
+                       <button 
+                          onClick={() => onDeleteTruck(truck.id)}
+                          className="p-3 text-error/40 hover:text-error hover:bg-error/10 rounded-sm transition-all"
+                       >
+                          <X className="w-5 h-5" />
+                       </button>
+                    </div>
+                 ))}
+                 {trucks.length === 0 && (
+                    <div className="col-span-full py-20 text-center opacity-20">
+                       <LayoutDashboard className="w-16 h-16 mx-auto mb-4" />
+                       <p className="font-mono text-xs uppercase tracking-widest">No Active Trucks Registered</p>
+                    </div>
+                 )}
+              </div>
+           </section>
+        </div>
+      )}
+
     </div>
   );
 };
@@ -1825,19 +3571,38 @@ export default function App() {
   const [view, setView] = useState<View>('login');
   const [isLoggedIn, setIsLoggedIn] = useState(false);
   const [language, setLanguage] = useState<Language>('th');
+  const [currency, setCurrency] = useState<CurrencyCode>('THB');
   const [theme, setTheme] = useState<ThemeMode>('dark');
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [supabaseStatus, setSupabaseStatus] = useState<SupabaseConnectionState>('missing_env');
-  const [menuItems, setMenuItems] = useState<MenuItem[]>(MENU_ITEMS);
-  const [orders, setOrders] = useState<Order[]>(RECENT_ORDERS);
-  const [staffMembers, setStaffMembers] = useState<StaffMember[]>(STAFF_MEMBERS_MOCK);
+  const [menuItems, setMenuItems] = useState<MenuItem[]>([]);
+  const [ingredients, setIngredients] = useState<IngredientItem[]>([]);
+  const [menuRecipes, setMenuRecipes] = useState<Record<string, MenuRecipeLine[]>>({});
+  const [orders, setOrders] = useState<Order[]>([]);
+  const [trucks, setTrucks] = useState<Truck[]>([]);
+  const [currentTruckId, setCurrentTruckId] = useState<string | null>(null);
+  const [isSoundEnabled, setIsSoundEnabled] = useState(false);
+  const [currentUser, setCurrentUser] = useState<StaffMember | null>(null);
+  const [staffMembers, setStaffMembers] = useState<StaffMember[]>([]);
   const [staffAccounts, setStaffAccounts] = useState<StaffAccount[]>([]);
   const [permissionMatrix, setPermissionMatrix] = useState<PermissionMatrix>(DEFAULT_PERMISSION_MATRIX);
+  const [inventoryMovements, setInventoryMovements] = useState<InventoryMovement[]>([]);
   const [isRemoteSyncing, setIsRemoteSyncing] = useState(false);
 
   useEffect(() => {
     document.documentElement.classList.toggle('light', theme === 'light');
   }, [theme]);
+
+  useEffect(() => {
+    const saved = localStorage.getItem('ops_currency');
+    if (saved === 'THB' || saved === 'JPY' || saved === 'USD' || saved === 'EUR') {
+      setCurrency(saved);
+    }
+  }, []);
+
+  useEffect(() => {
+    localStorage.setItem('ops_currency', currency);
+  }, [currency]);
 
   useEffect(() => {
     let isMounted = true;
@@ -1860,20 +3625,47 @@ export default function App() {
 
   const loadRemoteData = async () => {
     setIsRemoteSyncing(true);
-    const [remoteMenu, remoteOrders, remoteStaff, remotePermissions, remoteAccounts] = await Promise.all([
+    const [remoteTrucks, remoteMenu, remoteIngredients, remoteOrders, remoteStaff, remotePermissions, remoteAccounts] = await Promise.all([
+      fetchTrucks(),
       fetchMenuItems(),
+      fetchIngredients(),
       fetchOrders(),
       fetchStaffMembers(),
       fetchRolePermissions(),
       fetchStaffAccounts(),
     ]);
-    if (remoteMenu && remoteMenu.length > 0) {
-      setMenuItems(remoteMenu);
+
+    if (remoteTrucks) {
+      setTrucks(remoteTrucks);
+      if (remoteTrucks.length > 0 && !currentTruckId) {
+        setCurrentTruckId(remoteTrucks[0].id);
+      }
     }
-    if (remoteOrders && remoteOrders.length > 0) {
+    if (remoteMenu) {
+      setMenuItems(
+        remoteMenu.map((item) => ({
+          ...item,
+          active: typeof item.active === 'boolean' ? item.active : true,
+        })),
+      );
+    }
+    if (remoteIngredients) {
+      setIngredients(
+        remoteIngredients.map((ingredient) => ({
+          id: ingredient.id,
+          name: ingredient.name,
+          category: ingredient.category,
+          unit: ingredient.unit,
+          unitCost: ingredient.unitCost,
+          stock: ingredient.stock,
+          image: ingredient.image || `https://picsum.photos/seed/${ingredient.id}/300/300`,
+        })),
+      );
+    }
+    if (remoteOrders) {
       setOrders(remoteOrders);
     }
-    if (remoteStaff && remoteStaff.length > 0) {
+    if (remoteStaff) {
       setStaffMembers(
         remoteStaff.map((staff) => ({
           id: staff.id,
@@ -1884,7 +3676,7 @@ export default function App() {
         })),
       );
     }
-    if (remotePermissions && remotePermissions.length > 0) {
+    if (remotePermissions) {
       const nextMatrix: PermissionMatrix = { ...DEFAULT_PERMISSION_MATRIX };
       for (const item of remotePermissions) {
         nextMatrix[item.role] = {
@@ -1897,7 +3689,7 @@ export default function App() {
       }
       setPermissionMatrix(nextMatrix);
     }
-    if (remoteAccounts && remoteAccounts.length > 0) {
+    if (remoteAccounts) {
       setStaffAccounts(
         remoteAccounts.map((account) => ({
           staffId: account.staffId,
@@ -1915,7 +3707,7 @@ export default function App() {
     if (supabaseStatus !== 'connected') return;
     if (!isLoggedIn) {
       Promise.all([fetchStaffMembers(), fetchStaffAccounts()]).then(([remoteStaff, remoteAccounts]) => {
-        if (remoteStaff && remoteStaff.length > 0) {
+        if (remoteStaff) {
           setStaffMembers(
             remoteStaff.map((staff) => ({
               id: staff.id,
@@ -1926,7 +3718,7 @@ export default function App() {
             })),
           );
         }
-        if (remoteAccounts && remoteAccounts.length > 0) {
+        if (remoteAccounts) {
           setStaffAccounts(
             remoteAccounts.map((account) => ({
               staffId: account.staffId,
@@ -1945,12 +3737,35 @@ export default function App() {
     const unsubscribe = subscribeToOpsRealtime({
       onMenuItemsChange: () => {
         fetchMenuItems().then((remoteMenu) => {
-          if (remoteMenu && remoteMenu.length > 0) setMenuItems(remoteMenu);
+          if (remoteMenu) {
+            setMenuItems(
+              remoteMenu.map((item) => ({
+                ...item,
+                active: typeof item.active === 'boolean' ? item.active : true,
+              })),
+            );
+          }
+        });
+      },
+      onIngredientsChange: () => {
+        fetchIngredients().then((remoteIngredients) => {
+          if (!remoteIngredients) return;
+          setIngredients(
+            remoteIngredients.map((ingredient) => ({
+              id: ingredient.id,
+              name: ingredient.name,
+              category: ingredient.category,
+              unit: ingredient.unit,
+              unitCost: ingredient.unitCost,
+              stock: ingredient.stock,
+              image: ingredient.image || `https://picsum.photos/seed/${ingredient.id}/300/300`,
+            })),
+          );
         });
       },
       onOrdersChange: () => {
         fetchOrders().then((remoteOrders) => {
-          if (remoteOrders && remoteOrders.length > 0) setOrders(remoteOrders);
+          if (remoteOrders) setOrders(remoteOrders);
         });
       },
       onStaffChange: () => {
@@ -2005,12 +3820,59 @@ export default function App() {
     };
   }, [isLoggedIn, supabaseStatus]);
 
-  const handleChangeStock = (itemId: string, nextStock: number) => {
+  const lastProcessedOrderIds = useRef<string[]>([]);
+  useEffect(() => {
+    if (orders.length === 0) return;
+    
+    const currentIds = orders.map(o => o.id);
+    const prevIds = lastProcessedOrderIds.current;
+    
+    if (prevIds.length > 0) {
+      const newIds = currentIds.filter(id => !prevIds.includes(id));
+      const hasNewIncomingOrders = orders.some(o => 
+        newIds.includes(o.id) && 
+        o.status === 'new' && 
+        (!currentTruckId || o.truckId === currentTruckId)
+      );
+
+      if (hasNewIncomingOrders && isSoundEnabled) {
+        const audio = new Audio('https://assets.mixkit.co/active_storage/sfx/2869/2869-preview.mp3');
+        audio.play().catch(e => console.warn('[audio] blocked', e));
+      }
+    }
+    
+    lastProcessedOrderIds.current = currentIds;
+  }, [orders, isSoundEnabled, currentTruckId]);
+
+  const handleChangeStock = (itemId: string, nextStock: number, reason?: string) => {
+    let movement: InventoryMovement | null = null;
     setMenuItems((prev) =>
-      prev.map((item) => (item.id === itemId ? { ...item, stock: nextStock } : item)),
+      prev.map((item) => {
+        if (item.id !== itemId) return item;
+        const clampedStock = Math.max(0, nextStock);
+        const delta = clampedStock - item.stock;
+        if (delta !== 0) {
+          movement = {
+            id: `mv-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+            itemId: item.id,
+            itemName: item.name,
+            prevStock: item.stock,
+            nextStock: clampedStock,
+            delta,
+            reason: reason ?? (delta > 0 ? labels.restock : labels.consume),
+            timestamp: Date.now(),
+          };
+        }
+        return { ...item, stock: clampedStock };
+      }),
     );
+
+    if (movement) {
+      setInventoryMovements((prev) => [movement as InventoryMovement, ...prev].slice(0, 120));
+    }
+
     if (supabaseStatus === 'connected') {
-      updateMenuItemStock(itemId, nextStock).catch(() => {
+      updateMenuItemStock(itemId, Math.max(0, nextStock)).catch(() => {
         console.warn('[supabase] stock update failed');
       });
     }
@@ -2035,6 +3897,7 @@ export default function App() {
       note: payload.note,
       createdAt: Date.now(),
       lineItems: payload.lineItems,
+      truckId: currentTruckId || undefined,
     };
     setOrders((prev) => [localOrder, ...prev].slice(0, 50));
 
@@ -2046,8 +3909,265 @@ export default function App() {
     }
   };
 
+  const handleUpdateOrderStatus = async (orderId: string, status: Order['status']) => {
+    setOrders((prev) => prev.map((order) => (order.id === orderId ? { ...order, status } : order)));
+    if (supabaseStatus === 'connected') {
+      await updateOrderStatus(orderId, status);
+    }
+  };
+
+  const handleAddMenuItem = async (payload: {
+    name: string;
+    category: string;
+    price: number;
+    cost: number;
+    stock: number;
+    imageFile?: File | null;
+    description: string;
+    recipeLines?: MenuRecipeLine[];
+    active?: boolean;
+  }) => {
+    const uploadedImage =
+      supabaseStatus === 'connected' && payload.imageFile
+        ? await uploadOpsImage(payload.imageFile, 'menus')
+        : null;
+    const nextId = `m-${Date.now().toString(36)}`;
+    const skuPrefix = (payload.category || 'GEN').replace(/[^a-zA-Z]/g, '').slice(0, 3).toUpperCase() || 'GEN';
+    const nextItem: MenuItem = {
+      id: nextId,
+      name: payload.name,
+      category: payload.category,
+      price: Math.max(0, payload.price),
+      cost: Math.max(0, payload.cost),
+      stock: Math.max(0, Math.floor(payload.stock)),
+      sku: `${skuPrefix}-${Math.floor(Math.random() * 900 + 100)}`,
+      image:
+        uploadedImage ||
+        (payload.imageFile ? URL.createObjectURL(payload.imageFile) : '') ||
+        `https://picsum.photos/seed/menu-${Date.now()}/400/300`,
+      description: payload.description,
+      active: payload.active ?? true,
+    };
+    setMenuItems((prev) => [nextItem, ...prev]);
+    if (payload.recipeLines && payload.recipeLines.length > 0) {
+      setMenuRecipes((prev) => ({ ...prev, [nextItem.id]: payload.recipeLines ?? [] }));
+    }
+    if (supabaseStatus === 'connected') {
+      const remote = await insertMenuItem(nextItem);
+      if (remote) {
+        setMenuItems((prev) =>
+          prev.map((item) => (item.id === nextItem.id ? remote : item)),
+        );
+      }
+    }
+  };
+
+  const handleAddIngredient = async (payload: {
+    name: string;
+    unit: string;
+    unitCost: number;
+    stock: number;
+    category?: string;
+    imageFile?: File | null;
+  }) => {
+    const uploadedImage =
+      supabaseStatus === 'connected' && payload.imageFile
+        ? await uploadOpsImage(payload.imageFile, 'ingredients')
+        : null;
+    const nextIngredient: IngredientItem = {
+      id: `ing-${Date.now().toString(36)}`,
+      name: payload.name,
+      category: payload.category?.trim() || 'General',
+      unit: payload.unit,
+      unitCost: Math.max(0, payload.unitCost),
+      stock: Math.max(0, Math.floor(payload.stock)),
+      image:
+        uploadedImage ||
+        (payload.imageFile ? URL.createObjectURL(payload.imageFile) : '') ||
+        `https://picsum.photos/seed/ing-${Date.now()}/300/300`,
+    };
+    setIngredients((prev) => [nextIngredient, ...prev]);
+    if (supabaseStatus === 'connected') {
+      const remote = await insertIngredient(nextIngredient);
+      if (remote) {
+        setIngredients((prev) =>
+          prev.map((item) =>
+            item.id === nextIngredient.id
+              ? {
+                  ...item,
+                  id: remote.id,
+                  name: remote.name,
+                  category: remote.category,
+                  unit: remote.unit,
+                  unitCost: remote.unitCost,
+                  stock: remote.stock,
+                  image: remote.image || item.image,
+                }
+              : item,
+          ),
+        );
+      }
+    }
+  };
+
+  const handleUpsertRecipeLine = (payload: {
+    menuId: string;
+    ingredientId: string;
+    quantity: number;
+  }) => {
+    const safeQty = Math.max(0.01, payload.quantity);
+    setMenuRecipes((prev) => {
+      const existing = prev[payload.menuId] ?? [];
+      const foundIndex = existing.findIndex((line) => line.ingredientId === payload.ingredientId);
+      const nextLines = [...existing];
+      if (foundIndex >= 0) {
+        nextLines[foundIndex] = { ...nextLines[foundIndex], quantity: safeQty };
+      } else {
+        nextLines.push({ ingredientId: payload.ingredientId, quantity: safeQty });
+      }
+
+      const nextCost = nextLines.reduce((sum, line) => {
+        const ingredient = ingredients.find((item) => item.id === line.ingredientId);
+        return sum + (ingredient ? ingredient.unitCost * line.quantity : 0);
+      }, 0);
+
+      let updatedMenu: MenuItem | null = null;
+      setMenuItems((prevMenu) =>
+        prevMenu.map((item) => {
+          if (item.id !== payload.menuId) return item;
+          updatedMenu = { ...item, cost: nextCost };
+          return updatedMenu;
+        }),
+      );
+      if (supabaseStatus === 'connected' && updatedMenu) {
+        insertMenuItem(updatedMenu).catch(() => {
+          console.warn('[supabase] update menu cost failed');
+        });
+      }
+
+      return {
+        ...prev,
+        [payload.menuId]: nextLines,
+      };
+    });
+  };
+
+  const handleUpdateIngredient = (
+    ingredientId: string,
+    patch: Partial<Pick<IngredientItem, 'name' | 'category' | 'stock' | 'unitCost'>>,
+  ) => {
+    let updatedIngredient: IngredientItem | null = null;
+    setIngredients((prev) =>
+      prev.map((item) => {
+        if (item.id !== ingredientId) return item;
+        updatedIngredient = {
+          ...item,
+          ...(typeof patch.name === 'string' ? { name: patch.name } : {}),
+          ...(typeof patch.category === 'string' ? { category: patch.category } : {}),
+          ...(typeof patch.stock === 'number' && Number.isFinite(patch.stock)
+            ? { stock: Math.max(0, Math.floor(patch.stock)) }
+            : {}),
+          ...(typeof patch.unitCost === 'number' && Number.isFinite(patch.unitCost)
+            ? { unitCost: Math.max(0, patch.unitCost) }
+            : {}),
+        };
+        return updatedIngredient;
+      }),
+    );
+
+    if (supabaseStatus === 'connected' && updatedIngredient) {
+      insertIngredient(updatedIngredient).catch(() => {
+        console.warn('[supabase] update ingredient failed');
+      });
+    }
+  };
+
+  const handleDeleteIngredient = async (ingredientId: string) => {
+    setIngredients((prev) => prev.filter((item) => item.id !== ingredientId));
+    if (supabaseStatus === 'connected') {
+      const ok = await deleteIngredient(ingredientId);
+      if (!ok) {
+        console.warn('[supabase] delete ingredient failed');
+        fetchIngredients().then((remote) => {
+          if (!remote || remote.length === 0) return;
+          setIngredients(
+            remote.map((ingredient) => ({
+              id: ingredient.id,
+              name: ingredient.name,
+              category: ingredient.category,
+              unit: ingredient.unit,
+              unitCost: ingredient.unitCost,
+              stock: ingredient.stock,
+              image: ingredient.image || `https://picsum.photos/seed/${ingredient.id}/300/300`,
+            })),
+          );
+        });
+      }
+    }
+  };
+
+  const handleDeleteMenuItem = async (itemId: string) => {
+    setMenuItems((prev) => prev.filter((item) => item.id !== itemId));
+    setMenuRecipes((prev) => {
+      const next = { ...prev };
+      delete next[itemId];
+      return next;
+    });
+    if (supabaseStatus === 'connected') {
+      const ok = await deleteMenuItem(itemId);
+      if (!ok) {
+        console.warn('[supabase] delete menu item failed');
+        fetchMenuItems().then((remote) => {
+          if (!remote || remote.length === 0) return;
+          setMenuItems(
+            remote.map((item) => ({
+              ...item,
+              active: typeof item.active === 'boolean' ? item.active : true,
+            })),
+          );
+        });
+      }
+    }
+  };
+
+  const handleToggleMenuActive = async (itemId: string, active: boolean) => {
+    let updated: MenuItem | null = null;
+    setMenuItems((prev) =>
+      prev.map((item) => {
+        if (item.id !== itemId) return item;
+        updated = { ...item, active };
+        return updated;
+      }),
+    );
+    if (supabaseStatus === 'connected' && updated) {
+      await insertMenuItem(updated);
+    }
+  };
+
+  const handleUpdateMenuMeta = (
+    itemId: string,
+    patch: Partial<Pick<MenuItem, 'category' | 'cost' | 'price'>>,
+  ) => {
+    setMenuItems((prev) =>
+      prev.map((item) => {
+        if (item.id !== itemId) return item;
+        return {
+          ...item,
+          ...(typeof patch.category === 'string' ? { category: patch.category } : {}),
+          ...(typeof patch.cost === 'number' && Number.isFinite(patch.cost)
+            ? { cost: Math.max(0, patch.cost) }
+            : {}),
+          ...(typeof patch.price === 'number' && Number.isFinite(patch.price)
+            ? { price: Math.max(0, patch.price) }
+            : {}),
+        };
+      }),
+    );
+  };
+
   const kitchenOrders = useMemo(() => toKitchenOrders(orders), [orders]);
   const labels = TEXT[language];
+  const formatMoney = (value: number) => formatCurrencyAmount(value, currency, language);
   const staffAccountMap = useMemo(
     () => new Map(staffAccounts.map((account) => [account.staffId, account.username] as const)),
     [staffAccounts],
@@ -2166,6 +4286,24 @@ export default function App() {
     return password;
   };
 
+  const handleUpsertTruck = async (truck: Truck) => {
+    setTrucks(prev => {
+      const exists = prev.find(t => t.id === truck.id);
+      if (exists) return prev.map(t => t.id === truck.id ? truck : t);
+      return [...prev, truck];
+    });
+    if (supabaseStatus === 'connected') {
+      await upsertTruck(truck);
+    }
+  };
+
+  const handleDeleteTruck = async (truckId: string) => {
+    setTrucks(prev => prev.filter(t => t.id !== truckId));
+    if (supabaseStatus === 'connected') {
+      await deleteTruck(truckId);
+    }
+  };
+
   const handleLogin = async (payload: { username: string; password: string }) => {
     const username = payload.username.trim().toLowerCase();
     if (!username || !payload.password) {
@@ -2206,9 +4344,41 @@ export default function App() {
     }
 
     setIsLoggedIn(true);
+    setCurrentUser(matchedStaff);
     setView('dashboard');
     setMobileMenuOpen(false);
     return { ok: true };
+  };
+
+  const handleLogout = () => {
+    setIsLoggedIn(false);
+    setCurrentUser(null);
+    setView('login');
+    setMobileMenuOpen(false);
+  };
+
+  const handleUpdateUserImage = async (file: File) => {
+    if (!currentUser) return;
+    
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      const dataUrl = e.target?.result as string;
+      if (dataUrl) {
+        setStaffMembers(prev => prev.map(s => s.id === currentUser.id ? { ...s, image: dataUrl } : s));
+        setCurrentUser(prev => prev ? { ...prev, image: dataUrl } : null);
+      }
+    };
+    reader.readAsDataURL(file);
+
+    if (supabaseStatus === 'connected') {
+      const publicUrl = await uploadOpsImage(file, 'staff');
+      if (publicUrl) {
+        const updatedStaff = { ...currentUser, image: publicUrl };
+        await upsertStaffMember(updatedStaff);
+        setStaffMembers(prev => prev.map(s => s.id === currentUser.id ? updatedStaff : s));
+        setCurrentUser(updatedStaff);
+      }
+    }
   };
 
   const handleResetFirstLoginPassword = async (payload: {
@@ -2261,10 +4431,73 @@ export default function App() {
 
   const renderView = () => {
     switch (view) {
-      case 'dashboard': return <DashboardView orders={orders} menuItems={menuItems} labels={labels} />;
-      case 'orders': return <POSView menuItems={menuItems} onSubmitOrder={handleSubmitOrder} labels={labels} />;
-      case 'menu': return <MenuView menuItems={menuItems} onChangeStock={handleChangeStock} labels={labels} />;
-      case 'kitchen': return <KitchenView kitchenOrders={kitchenOrders} />;
+      case 'dashboard': 
+        return (
+          <DashboardView 
+            orders={orders.filter(o => !currentTruckId || o.truckId === currentTruckId)} 
+            menuItems={menuItems.filter(item => !currentTruckId || item.truckId === currentTruckId)} 
+            labels={labels} 
+            formatMoney={formatMoney} 
+            onViewHistory={() => setView('orderHistory')}
+          />
+        );
+      case 'orderHistory':
+        return (
+          <OrderHistoryView 
+            orders={orders.filter(o => !currentTruckId || o.truckId === currentTruckId)} 
+            labels={labels} 
+            formatMoney={formatMoney} 
+          />
+        );
+      case 'orders': 
+        return (
+          <POSView 
+            menuItems={menuItems.filter(item => !currentTruckId || item.truckId === currentTruckId)} 
+            onSubmitOrder={handleSubmitOrder} 
+            labels={labels} 
+            formatMoney={formatMoney} 
+          />
+        );
+      case 'inventoryMenu':
+        return (
+          <MenuView
+            menuItems={menuItems}
+            onChangeStock={handleChangeStock}
+            inventoryMovements={inventoryMovements}
+            ingredients={ingredients}
+            menuRecipes={menuRecipes}
+            onAddMenuItem={handleAddMenuItem}
+            onAddIngredient={handleAddIngredient}
+            onUpsertRecipeLine={handleUpsertRecipeLine}
+            onUpdateMenuMeta={handleUpdateMenuMeta}
+            onDeleteMenuItem={handleDeleteMenuItem}
+            onToggleMenuActive={handleToggleMenuActive}
+            formatMoney={formatMoney}
+            showIngredientPanel={false}
+            labels={labels}
+          />
+        );
+      case 'inventoryIngredients':
+        return (
+          <IngredientsView
+            ingredients={ingredients}
+            onAddIngredient={handleAddIngredient}
+            onUpdateIngredient={handleUpdateIngredient}
+            onDeleteIngredient={handleDeleteIngredient}
+            labels={labels}
+            formatMoney={formatMoney}
+          />
+        );
+      case 'kitchen': 
+        return (
+          <KitchenView 
+            kitchenOrders={kitchenOrders.filter(o => !currentTruckId || o.dbStatus === 'delivered' || orders.find(ord => ord.id === o.id)?.truckId === currentTruckId)} 
+            onUpdateStatus={handleUpdateOrderStatus} 
+            labels={labels} 
+            isSoundEnabled={isSoundEnabled}
+            onToggleSound={setIsSoundEnabled}
+          />
+        );
       case 'settings':
         return (
           <SettingsView
@@ -2277,9 +4510,21 @@ export default function App() {
             onDeleteStaff={handleDeleteStaff}
             onCreateStaffAccount={handleCreateStaffAccount}
             accountMap={staffAccountMap}
+            trucks={trucks}
+            onUpsertTruck={handleUpsertTruck}
+            onDeleteTruck={handleDeleteTruck}
           />
         );
-      default: return <DashboardView orders={orders} menuItems={menuItems} labels={labels} />;
+      default: 
+        return (
+          <DashboardView 
+            orders={orders.filter(o => !currentTruckId || o.truckId === currentTruckId)} 
+            menuItems={menuItems.filter(item => !currentTruckId || item.truckId === currentTruckId)} 
+            labels={labels} 
+            formatMoney={formatMoney} 
+            onViewHistory={() => setView('orderHistory')}
+          />
+        );
     }
   };
 
@@ -2287,7 +4532,8 @@ export default function App() {
     switch (view) {
       case 'dashboard': return labels.adminDashboard;
       case 'orders': return labels.posTerminal;
-      case 'menu': return labels.menuManagement;
+      case 'inventoryIngredients': return labels.inventoryIngredients;
+      case 'inventoryMenu': return labels.inventoryMenu;
       case 'kitchen': return labels.kitchenBoard;
       case 'settings': return labels.settingsTitle;
       default: return 'Tokyo x Paris';
@@ -2345,9 +4591,17 @@ export default function App() {
           labels={labels}
           language={language}
           onToggleLanguage={() => setLanguage((prev) => (prev === 'en' ? 'th' : 'en'))}
+          currency={currency}
+          onChangeCurrency={setCurrency}
           theme={theme}
           onToggleTheme={() => setTheme((prev) => (prev === 'dark' ? 'light' : 'dark'))}
           onOpenMobileMenu={() => setMobileMenuOpen(true)}
+          trucks={trucks}
+          currentTruckId={currentTruckId}
+          onTruckChange={setCurrentTruckId}
+          currentUser={currentUser}
+          onLogout={handleLogout}
+          onUpdateUserImage={handleUpdateUserImage}
         />
         
         <div className="flex-1 p-0">
