@@ -1,0 +1,51 @@
+@import url('https://fonts.googleapis.com/css2?family=Epilogue:wght@700;800;900&family=Manrope:wght@400;500;600&family=Space+Grotesk:wght@400;500;700&display=swap');
+@import "tailwindcss";
+
+@theme {
+  --font-sans: "Manrope", ui-sans-serif, system-ui, sans-serif;
+  --font-headline: "Epilogue", sans-serif;
+  --font-mono: "Space Grotesk", monospace;
+
+  --color-background: #131313;
+  --color-surface: #131313;
+  --color-surface-low: #1c1b1b;
+  --color-surface-high: #2a2a2a;
+  --color-surface-highest: #353534;
+  
+  --color-primary: #ffb3b2;
+  --color-primary-container: #ff525c;
+  --color-on-primary-fixed: #410008;
+  
+  --color-secondary: #e9c349;
+  --color-on-surface: #e5e2e1;
+  --color-on-surface-variant: #e9bcba;
+  --color-outline: #af8786;
+  --color-outline-variant: #5f3e3e;
+  
+  --color-error: #ffb4ab;
+  --color-error-container: #93000a;
+
+  --radius-sm: 0.125rem;
+  --radius-lg: 0.25rem;
+  --radius-xl: 0.5rem;
+}
+
+@layer base {
+  body {
+    @apply bg-background text-on-surface font-sans antialiased;
+  }
+}
+
+@layer utilities {
+  .bg-neon-gradient {
+    background: linear-gradient(135deg, var(--color-primary) 0%, var(--color-primary-container) 100%);
+  }
+  
+  .glass-panel {
+    @apply bg-surface/60 backdrop-blur-[20px];
+  }
+
+  .text-neon-glow {
+    text-shadow: 0 0 10px rgba(255, 179, 178, 0.4);
+  }
+}
