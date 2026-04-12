@@ -27,6 +27,8 @@ import {
   Volume2,
   VolumeX,
   Camera,
+  Eye,
+  EyeOff,
 } from 'lucide-react';
 import { 
   BarChart, 
@@ -704,8 +706,7 @@ const Sidebar = ({
     { id: 'settings', label: labels.settings, icon: Settings },
   ];
 
-  const LOGO_URL = "https://storage.googleapis.com/static.antigravity.dev/projects/0921448f-9bed-4b83-8a10-06ddbaef767f/logo.png";
-
+  const LOGO_URL = "https://oeeodnscuvivturnxlft.supabase.co/storage/v1/object/public/ops-media/login-bg.png";
   return (
     <aside className={cn("h-screen w-64 bg-surface-low flex flex-col py-8 z-50 border-r border-outline-variant/10", className)}>
       <div className="px-8 mb-10">
@@ -720,7 +721,7 @@ const Sidebar = ({
           </div>
           <div>
             <h1 className="font-headline font-bold text-lg text-on-surface leading-tight">Tokyo x Paris</h1>
-            <p className="text-[10px] uppercase tracking-widest text-primary font-bold font-mono">Midnight Atelier</p>
+            <p className="text-[10px] uppercase tracking-widest text-primary font-bold font-mono">STREET LUXURY</p>
           </div>
         </div>
       </div>
@@ -3320,6 +3321,7 @@ const LoginView = ({
   onToggleLanguage,
   theme,
   onToggleTheme,
+  staffAccounts,
 }: {
   onLogin: (payload: { username: string; password: string }) => Promise<{
     ok: boolean;
@@ -3337,8 +3339,9 @@ const LoginView = ({
   onToggleLanguage: () => void;
   theme: ThemeMode;
   onToggleTheme: () => void;
+  staffAccounts: StaffAccount[];
 }) => {
-  const LOGO_URL = "https://storage.googleapis.com/static.antigravity.dev/projects/0921448f-9bed-4b83-8a10-06ddbaef767f/logo.png";
+  const LOGO_URL = "https://oeeodnscuvivturnxlft.supabase.co/storage/v1/object/public/ops-media/login-bg.png";
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   const [newPassword, setNewPassword] = useState('');
@@ -3347,6 +3350,7 @@ const LoginView = ({
   const [authError, setAuthError] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [mode, setMode] = useState<'login' | 'reset'>('login');
+  const [showPassword, setShowPassword] = useState(false);
 
   const handleSubmitLogin = async (event: React.FormEvent) => {
     event.preventDefault();
@@ -3464,14 +3468,29 @@ const LoginView = ({
               <div className="space-y-2">
                 <label className="font-mono text-[10px] tracking-widest uppercase text-primary/80 block ml-1 font-bold">{labels.username}</label>
                 <div className="relative group">
-                  <input
-                    className="w-full bg-black/40 border border-outline-variant/30 rounded-sm py-4 px-5 text-on-surface placeholder:text-surface-highest focus:border-primary focus:ring-0 transition-all duration-500 text-sm outline-none"
-                    placeholder={labels.username}
-                    value={username}
-                    onChange={(event) => setUsername(event.target.value)}
-                    type="text"
-                  />
-                  <div className="absolute inset-0 border border-primary/0 group-focus-within:border-primary/50 transition-all duration-500 pointer-events-none"></div>
+                  {staffAccounts.filter(a => a.active).length > 0 ? (
+                    <select
+                      className="w-full bg-black/40 border border-outline-variant/30 rounded-sm py-4 px-5 text-on-surface focus:border-primary focus:ring-0 transition-all duration-500 text-sm outline-none appearance-none cursor-pointer"
+                      value={username}
+                      onChange={(event) => setUsername(event.target.value)}
+                    >
+                      <option value="" disabled className="bg-surface-low text-on-surface/50">-- Select User --</option>
+                      {staffAccounts.filter(a => a.active).map(acc => (
+                        <option key={acc.staffId} value={acc.username} className="bg-surface-low text-on-surface">
+                          {acc.username}
+                        </option>
+                      ))}
+                    </select>
+                  ) : (
+                    <input
+                      className="w-full bg-black/40 border border-outline-variant/30 rounded-sm py-4 px-5 text-on-surface placeholder:text-surface-highest focus:border-primary focus:ring-0 transition-all duration-500 text-sm outline-none"
+                      placeholder={labels.username}
+                      value={username}
+                      onChange={(event) => setUsername(event.target.value)}
+                      type="text"
+                    />
+                  )}
+                  <div className="absolute inset-0 border border-primary/0 group-focus-within:border-primary/50 transition-all duration-500 pointer-events-none rounded-sm"></div>
                 </div>
               </div>
 
@@ -3481,13 +3500,21 @@ const LoginView = ({
                 </div>
                 <div className="relative group">
                   <input
-                    className="w-full bg-black/40 border border-outline-variant/30 rounded-sm py-4 px-5 text-on-surface placeholder:text-surface-highest focus:border-primary focus:ring-0 transition-all duration-500 text-sm outline-none"
+                    className="w-full bg-black/40 border border-outline-variant/30 rounded-sm py-4 px-5 pr-12 text-on-surface placeholder:text-surface-highest focus:border-primary focus:ring-0 transition-all duration-500 text-sm outline-none"
                     placeholder="••••••••"
                     value={password}
                     onChange={(event) => setPassword(event.target.value)}
-                    type="password"
+                    type={showPassword ? "text" : "password"}
                   />
-                  <div className="absolute inset-0 border border-primary/0 group-focus-within:border-primary/50 transition-all duration-500 pointer-events-none"></div>
+                  <button 
+                    type="button" 
+                    onClick={() => setShowPassword(!showPassword)}
+                    className="absolute right-4 top-1/2 -translate-y-1/2 text-on-surface/50 hover:text-primary transition-colors cursor-pointer z-10"
+                    tabIndex={-1}
+                  >
+                    {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                  </button>
+                  <div className="absolute inset-0 border border-primary/0 group-focus-within:border-primary/50 transition-all duration-500 pointer-events-none rounded-sm"></div>
                 </div>
               </div>
 
@@ -4425,6 +4452,7 @@ export default function App() {
         onToggleLanguage={() => setLanguage((prev) => (prev === 'en' ? 'th' : 'en'))}
         theme={theme}
         onToggleTheme={() => setTheme((prev) => (prev === 'dark' ? 'light' : 'dark'))}
+        staffAccounts={staffAccounts}
       />
     );
   }
