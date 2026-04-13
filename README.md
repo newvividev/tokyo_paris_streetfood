@@ -57,6 +57,13 @@ create table if not exists public.menu_items (
 alter table public.menu_items
   add column if not exists is_active boolean not null default true;
 
+create table if not exists public.menu_recipes (
+  menu_id text not null references public.menu_items(id) on delete cascade,
+  ingredient_id text not null references public.ingredients(id) on delete cascade,
+  quantity numeric not null default 0,
+  primary key (menu_id, ingredient_id)
+);
+
 create table if not exists public.orders (
   id text primary key,
   customer text not null default 'Guest',

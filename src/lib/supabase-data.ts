@@ -14,6 +14,12 @@ export type DbMenuItem = {
   truckId?: string;
 };
 
+export type DbMenuRecipeLine = {
+  menuId: string;
+  ingredientId: string;
+  quantity: number;
+};
+
 export type DbOrderLine = {
   name: string;
   qty: number;
@@ -249,6 +255,7 @@ export const deleteMenuItem = async (itemId: string): Promise<boolean> => {
   if (!isSupabaseConfigured()) return false;
   try {
     const supabase = getSupabaseClient();
+    await supabase.from('menu_recipes').delete().eq('menu_id', itemId);
     const { error } = await supabase.from('menu_items').delete().eq('id', itemId);
     return !error;
   } catch {
@@ -292,6 +299,35 @@ export const fetchIngredients = async (): Promise<DbIngredient[] | null> => {
   }
 };
 
+export const fetchMenuRecipes = async (): Promise<Record<string, DbMenuRecipeLine[]> | null> => {
+  if (!isSupabaseConfigured()) return null;
+  try {
+    const supabase = getSupabaseClient();
+    const { data, error } = await supabase
+      .from('menu_recipes')
+      .select('menu_id,ingredient_id,quantity')
+      .order('menu_id', { ascending: true })
+      .order('ingredient_id', { ascending: true });
+    if (error || !data) return null;
+
+    const grouped: Record<string, DbMenuRecipeLine[]> = {};
+    for (const row of data) {
+      const menuId = String(row.menu_id ?? '');
+      const ingredientId = String(row.ingredient_id ?? '');
+      if (!menuId || !ingredientId) continue;
+      if (!grouped[menuId]) grouped[menuId] = [];
+      grouped[menuId].push({
+        menuId,
+        ingredientId,
+        quantity: Number(row.quantity ?? 0),
+      });
+    }
+    return grouped;
+  } catch {
+    return null;
+  }
+};
+
 export const insertIngredient = async (ingredient: DbIngredient): Promise<DbIngredient | null> => {
   if (!isSupabaseConfigured()) return null;
   try {
@@ -310,6 +346,32 @@ export const insertIngredient = async (ingredient: DbIngredient): Promise<DbIngr
     return normalizeIngredient(data);
   } catch {
     return null;
+  }
+};
+
+export const replaceMenuRecipeLines = async (
+  menuId: string,
+  lines: DbMenuRecipeLine[],
+): Promise<boolean> => {
+  if (!isSupabaseConfigured()) return false;
+  try {
+    const supabase = getSupabaseClient();
+    const cleanLines = lines
+      .filter((line) => Boolean(line.menuId && line.ingredientId))
+      .map((line) => ({
+        menu_id: line.menuId,
+        ingredient_id: line.ingredientId,
+        quantity: Number(line.quantity ?? 0),
+      }));
+
+    const { error: deleteError } = await supabase.from('menu_recipes').delete().eq('menu_id', menuId);
+    if (deleteError) return false;
+    if (cleanLines.length === 0) return true;
+
+    const { error: insertError } = await supabase.from('menu_recipes').insert(cleanLines);
+    return !insertError;
+  } catch {
+    return false;
   }
 };
 
@@ -558,6 +620,7 @@ export const deleteStaffMember = async (staffId: string): Promise<boolean> => {
 
 export const subscribeToOpsRealtime = ({
   onMenuItemsChange,
+  onMenuRecipesChange,
   onOrdersChange,
   onIngredientsChange,
   onStaffChange,
@@ -565,6 +628,7 @@ export const subscribeToOpsRealtime = ({
   onStaffAccountsChange,
 }: {
   onMenuItemsChange: () => void;
+  onMenuRecipesChange?: () => void;
   onOrdersChange: () => void;
   onIngredientsChange?: () => void;
   onStaffChange?: () => void;
@@ -578,6 +642,9 @@ export const subscribeToOpsRealtime = ({
       .channel('ops-live-sync')
       .on('postgres_changes', { event: '*', schema: 'public', table: 'menu_items' }, () => {
         onMenuItemsChange();
+      })
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'menu_recipes' }, () => {
+        onMenuRecipesChange?.();
       })
       .on('postgres_changes', { event: '*', schema: 'public', table: 'orders' }, () => {
         onOrdersChange();
