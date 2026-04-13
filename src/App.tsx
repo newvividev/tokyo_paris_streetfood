@@ -45,6 +45,7 @@ import {
   deleteTruck,
   fetchIngredients,
   fetchMenuItems,
+  fetchMenuRecipes,
   fetchOrders,
   fetchStaffAccounts,
   fetchRolePermissions,
@@ -59,6 +60,7 @@ import {
   updateOrderStatus,
   updateStaffPassword,
   uploadOpsImage,
+  replaceMenuRecipeLines,
   upsertStaffAccount,
   upsertTruck,
   upsertRolePermission,
@@ -1892,7 +1894,7 @@ const MenuView = ({
     ingredientId: string;
     quantity: number;
   }) => void;
-  onUpdateMenuMeta: (itemId: string, patch: Partial<Pick<MenuItem, 'category' | 'cost' | 'price'>>) => void;
+  onUpdateMenuMeta: (itemId: string, patch: Partial<Pick<MenuItem, 'category' | 'cost' | 'price'>>) => Promise<void>;
   onDeleteMenuItem: (itemId: string) => Promise<void>;
   onToggleMenuActive: (itemId: string, active: boolean) => Promise<void>;
   formatMoney: (value: number) => string;
@@ -3626,9 +3628,10 @@ export default function App() {
 
   const loadRemoteData = async () => {
     setIsRemoteSyncing(true);
-    const [remoteTrucks, remoteMenu, remoteIngredients, remoteOrders, remoteStaff, remotePermissions, remoteAccounts] = await Promise.all([
+    const [remoteTrucks, remoteMenu, remoteRecipes, remoteIngredients, remoteOrders, remoteStaff, remotePermissions, remoteAccounts] = await Promise.all([
       fetchTrucks(),
       fetchMenuItems(),
+      fetchMenuRecipes(),
       fetchIngredients(),
       fetchOrders(),
       fetchStaffMembers(),
@@ -3649,6 +3652,9 @@ export default function App() {
           active: typeof item.active === 'boolean' ? item.active : true,
         })),
       );
+    }
+    if (remoteRecipes) {
+      setMenuRecipes(remoteRecipes);
     }
     if (remoteIngredients) {
       setIngredients(
@@ -3745,6 +3751,13 @@ export default function App() {
                 active: typeof item.active === 'boolean' ? item.active : true,
               })),
             );
+          }
+        });
+      },
+      onMenuRecipesChange: () => {
+        fetchMenuRecipes().then((remoteRecipes) => {
+          if (remoteRecipes) {
+            setMenuRecipes(remoteRecipes);
           }
         });
       },
@@ -3947,6 +3960,18 @@ export default function App() {
           prev.map((item) => (item.id === nextItem.id ? remote : item)),
         );
       }
+      if (payload.recipeLines && payload.recipeLines.length > 0) {
+        const recipeMenuId = remote?.id ?? nextItem.id;
+        const recipeLines = payload.recipeLines.map((line) => ({
+          menuId: recipeMenuId,
+          ingredientId: line.ingredientId,
+          quantity: line.quantity,
+        }));
+        const ok = await replaceMenuRecipeLines(recipeMenuId, recipeLines);
+        if (!ok) {
+          console.warn('[supabase] save recipe lines failed');
+        }
+      }
     }
   };
 
@@ -4003,41 +4028,55 @@ export default function App() {
     ingredientId: string;
     quantity: number;
   }) => {
-    const safeQty = Math.max(0.01, payload.quantity);
-    setMenuRecipes((prev) => {
-      const existing = prev[payload.menuId] ?? [];
-      const foundIndex = existing.findIndex((line) => line.ingredientId === payload.ingredientId);
-      const nextLines = [...existing];
+    const existing = menuRecipes[payload.menuId] ?? [];
+    const foundIndex = existing.findIndex((line) => line.ingredientId === payload.ingredientId);
+    const nextLines = [...existing];
+    if (payload.quantity <= 0) {
       if (foundIndex >= 0) {
-        nextLines[foundIndex] = { ...nextLines[foundIndex], quantity: safeQty };
-      } else {
-        nextLines.push({ ingredientId: payload.ingredientId, quantity: safeQty });
+        nextLines.splice(foundIndex, 1);
       }
+    } else if (foundIndex >= 0) {
+      nextLines[foundIndex] = { ...nextLines[foundIndex], quantity: Math.max(0.01, payload.quantity) };
+    } else {
+      nextLines.push({ ingredientId: payload.ingredientId, quantity: Math.max(0.01, payload.quantity) });
+    }
 
-      const nextCost = nextLines.reduce((sum, line) => {
-        const ingredient = ingredients.find((item) => item.id === line.ingredientId);
-        return sum + (ingredient ? ingredient.unitCost * line.quantity : 0);
-      }, 0);
+    setMenuRecipes((prev) => ({
+      ...prev,
+      [payload.menuId]: nextLines,
+    }));
 
-      let updatedMenu: MenuItem | null = null;
-      setMenuItems((prevMenu) =>
-        prevMenu.map((item) => {
-          if (item.id !== payload.menuId) return item;
-          updatedMenu = { ...item, cost: nextCost };
-          return updatedMenu;
-        }),
-      );
-      if (supabaseStatus === 'connected' && updatedMenu) {
+    const nextCost = nextLines.reduce((sum, line) => {
+      const ingredient = ingredients.find((item) => item.id === line.ingredientId);
+      return sum + (ingredient ? ingredient.unitCost * line.quantity : 0);
+    }, 0);
+
+    let updatedMenu: MenuItem | null = null;
+    setMenuItems((prevMenu) =>
+      prevMenu.map((item) => {
+        if (item.id !== payload.menuId) return item;
+        updatedMenu = { ...item, cost: nextCost };
+        return updatedMenu;
+      }),
+    );
+
+    if (supabaseStatus === 'connected') {
+      if (updatedMenu) {
         insertMenuItem(updatedMenu).catch(() => {
           console.warn('[supabase] update menu cost failed');
         });
       }
-
-      return {
-        ...prev,
-        [payload.menuId]: nextLines,
-      };
-    });
+      replaceMenuRecipeLines(
+        payload.menuId,
+        nextLines.map((line) => ({
+          menuId: payload.menuId,
+          ingredientId: line.ingredientId,
+          quantity: line.quantity,
+        })),
+      ).catch(() => {
+        console.warn('[supabase] update recipe lines failed');
+      });
+    }
   };
 
   const handleUpdateIngredient = (
@@ -4132,14 +4171,15 @@ export default function App() {
     }
   };
 
-  const handleUpdateMenuMeta = (
+  const handleUpdateMenuMeta = async (
     itemId: string,
     patch: Partial<Pick<MenuItem, 'category' | 'cost' | 'price'>>,
-  ) => {
+  ): Promise<void> => {
+    let updatedMenu: MenuItem | null = null;
     setMenuItems((prev) =>
       prev.map((item) => {
         if (item.id !== itemId) return item;
-        return {
+        updatedMenu = {
           ...item,
           ...(typeof patch.category === 'string' ? { category: patch.category } : {}),
           ...(typeof patch.cost === 'number' && Number.isFinite(patch.cost)
@@ -4149,8 +4189,13 @@ export default function App() {
             ? { price: Math.max(0, patch.price) }
             : {}),
         };
+        return updatedMenu;
       }),
     );
+
+    if (supabaseStatus === 'connected' && updatedMenu) {
+      await insertMenuItem(updatedMenu);
+    }
   };
 
   const kitchenOrders = useMemo(() => toKitchenOrders(orders), [orders]);
