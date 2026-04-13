@@ -74,6 +74,7 @@ type View = 'dashboard' | 'orders' | 'inventoryIngredients' | 'inventoryMenu' | 
 type Language = 'en' | 'th';
 type ThemeMode = 'dark' | 'light';
 type CurrencyCode = 'THB' | 'JPY' | 'USD' | 'EUR';
+type StoreMode = 'open' | 'closed';
 type StaffRole = 'Manager' | 'Server' | 'Kitchen';
 
 type RolePermission = {
@@ -159,6 +160,18 @@ interface IngredientItem {
 interface MenuRecipeLine {
   ingredientId: string;
   quantity: number;
+}
+
+interface SandboxState {
+  menuItems: MenuItem[];
+  menuRecipes: Record<string, MenuRecipeLine[]>;
+  ingredients: IngredientItem[];
+  orders: Order[];
+  trucks: Truck[];
+  staffMembers: StaffMember[];
+  staffAccounts: StaffAccount[];
+  permissionMatrix: PermissionMatrix;
+  currentTruckId: string | null;
 }
 
 // --- Mock Data ---
@@ -278,6 +291,9 @@ const DEFAULT_PERMISSION_MATRIX: PermissionMatrix = {
 
 const MENU_CATEGORY_OPTIONS = ['อาหาร', 'เครื่องดื่ม'];
 
+const STORE_MODE_STORAGE_KEY = 'ops_store_mode';
+const SANDBOX_STORAGE_KEY = 'ops_sandbox_state_v1';
+
 const TEXT = {
   en: {
     dashboard: 'Dashboard',
@@ -292,6 +308,17 @@ const TEXT = {
     supabaseConnected: 'Supabase Connected',
     supabaseMissing: 'Supabase Missing Env',
     supabaseError: 'Supabase Error',
+    storeMode: 'Store Mode',
+    storeOpen: 'Open',
+    storeClosed: 'Test Mode',
+    openStore: 'Open Store',
+    closeStore: 'Close Store',
+    storeOpenDesc: 'Live mode writes to Supabase for real orders, kitchen, and inventory data.',
+    storeClosedDesc: 'Sandbox mode keeps data separate from production but stays fully usable.',
+    storeModeHint: 'Switch between live and sandbox data.',
+    storeClosedDashboard: 'You are in test mode. Sales and order metrics are saved separately from live data.',
+    storeClosedOrders: 'Test mode: orders are saved locally and kept separate from live data.',
+    storeClosedKitchen: 'Kitchen activity in test mode stays separate from live operations.',
     adminDashboard: 'Admin Dashboard',
     posTerminal: 'POS Terminal',
     kitchenBoard: 'Kitchen Board',
@@ -439,6 +466,17 @@ const TEXT = {
     supabaseConnected: 'Supabase เชื่อมต่อแล้ว',
     supabaseMissing: 'Supabase ยังไม่ตั้งค่า',
     supabaseError: 'Supabase ผิดพลาด',
+    storeMode: 'โหมดร้าน',
+    storeOpen: 'เปิดร้าน',
+    storeClosed: 'โหมดทดสอบ',
+    openStore: 'เปิดร้าน',
+    closeStore: 'ปิดร้าน',
+    storeOpenDesc: 'โหมดจริงจะบันทึกลง Supabase สำหรับออเดอร์ ครัว และสต็อกจริง',
+    storeClosedDesc: 'โหมดทดลองยังใช้งานได้ครบ แต่จะแยกข้อมูลจากของจริง',
+    storeModeHint: 'สลับระหว่างข้อมูลจริงและข้อมูลทดลอง',
+    storeClosedDashboard: 'ตอนนี้เป็นโหมดทดสอบ ยอดขายและออเดอร์จะถูกเก็บแยกจากข้อมูลจริง',
+    storeClosedOrders: 'โหมดทดสอบ: ออเดอร์จะถูกบันทึกแยกจากของจริง',
+    storeClosedKitchen: 'งานครัวในโหมดทดสอบจะถูกเก็บแยกจากงานจริง',
     adminDashboard: 'แดชบอร์ดผู้ดูแล',
     posTerminal: 'หน้าขาย POS',
     kitchenBoard: 'บอร์ดครัว',
@@ -699,6 +737,8 @@ const TopBar = ({
   title,
   subtitle,
   supabaseStatus,
+  storeMode,
+  onToggleStoreMode,
   labels,
   language,
   onToggleLanguage,
@@ -717,6 +757,8 @@ const TopBar = ({
   title: string;
   subtitle?: React.ReactNode;
   supabaseStatus: SupabaseConnectionState;
+  storeMode: StoreMode;
+  onToggleStoreMode: () => void;
   labels: typeof TEXT.en;
   language: Language;
   onToggleLanguage: () => void;
@@ -781,6 +823,19 @@ const TopBar = ({
         <div className={cn('hidden md:block px-3 py-1 rounded-sm border text-[10px] font-mono uppercase tracking-widest', statusClass)}>
           {statusLabel}
         </div>
+        <button
+          onClick={onToggleStoreMode}
+          className={cn(
+            'px-3 py-2 rounded-sm text-xs font-bold uppercase tracking-wider flex items-center gap-2 border transition-colors',
+            storeMode === 'open'
+              ? 'bg-secondary/10 text-secondary border-secondary/30'
+              : 'bg-surface-high text-on-surface/70 border-outline-variant/20',
+          )}
+          title={labels.storeModeHint}
+        >
+          <span className={cn('w-2 h-2 rounded-full', storeMode === 'open' ? 'bg-secondary' : 'bg-on-surface/40')} />
+          {storeMode === 'open' ? labels.storeOpen : labels.storeClosed}
+        </button>
         <button
           onClick={onToggleLanguage}
           className="px-3 py-2 rounded-sm bg-surface-high text-on-surface text-xs font-bold uppercase tracking-wider flex items-center gap-2"
@@ -1032,12 +1087,14 @@ const DashboardView = ({
   labels,
   formatMoney,
   onViewHistory,
+  storeMode,
 }: {
   orders: Order[];
   menuItems: MenuItem[];
   labels: typeof TEXT.en;
   formatMoney: (value: number) => string;
   onViewHistory: () => void;
+  storeMode: StoreMode;
 }) => {
   const [selectedOrder, setSelectedOrder] = useState<Order | null>(null);
 
@@ -1071,6 +1128,12 @@ const DashboardView = ({
 
   return (
     <div className="space-y-8 animate-in fade-in duration-500">
+      {storeMode === 'closed' && (
+        <div className="mx-4 lg:mx-8 rounded-sm border border-secondary/20 bg-secondary/10 px-4 py-3">
+          <p className="text-[10px] uppercase tracking-[0.2em] font-bold text-secondary">{labels.storeClosed}</p>
+          <p className="text-xs text-on-surface/70 mt-1">{labels.storeClosedDashboard}</p>
+        </div>
+      )}
       <div className="mx-0 order-ticker py-2 px-6 flex items-center justify-between rounded-sm bg-secondary/20 text-secondary border border-secondary/30">
         <div className="flex items-center gap-4">
           <span className="font-mono font-bold text-sm tracking-tighter uppercase">Operations Hub</span>
@@ -1275,10 +1338,12 @@ const OrderHistoryView = ({
   orders,
   labels,
   formatMoney,
+  storeMode,
 }: {
   orders: Order[];
   labels: typeof TEXT.en;
   formatMoney: (value: number) => string;
+  storeMode: StoreMode;
 }) => {
   const [searchTerm, setSearchTerm] = useState('');
   const [selectedOrder, setSelectedOrder] = useState<Order | null>(null);
@@ -1294,6 +1359,14 @@ const OrderHistoryView = ({
 
   return (
     <div className="flex flex-col h-[calc(100vh-4rem)] animate-in slide-in-from-right-10 duration-500">
+      {storeMode === 'closed' && (
+        <div className="p-4 lg:p-8 pb-0">
+          <div className="rounded-sm border border-secondary/20 bg-secondary/10 px-4 py-3">
+            <p className="text-[10px] uppercase tracking-[0.2em] font-bold text-secondary">{labels.storeClosed}</p>
+            <p className="text-xs text-on-surface/70 mt-1">{labels.storeClosedOrders}</p>
+          </div>
+        </div>
+      )}
       <div className="p-8 border-b border-outline-variant/10 bg-surface-low">
         <div className="flex flex-col md:flex-row justify-between items-start md:items-end gap-6 mb-8">
           <div>
@@ -1397,6 +1470,7 @@ const POSView = ({
   labels,
   formatMoney,
   todayOrderCount,
+  storeMode,
 }: {
   menuItems: MenuItem[];
   onSubmitOrder: (payload: {
@@ -1413,6 +1487,7 @@ const POSView = ({
   labels: typeof TEXT.en;
   formatMoney: (value: number) => string;
   todayOrderCount: number;
+  storeMode: StoreMode;
 }) => {
   const [cart, setCart] = useState<{ item: MenuItem; qty: number }[]>([]);
   const [note, setNote] = useState('');
@@ -1542,6 +1617,11 @@ const POSView = ({
 
       <aside className="w-full xl:w-96 bg-surface-low flex flex-col border-t xl:border-t-0 xl:border-l border-outline-variant/10 shadow-2xl">
         <div className="p-6 pb-4">
+          {storeMode === 'closed' && (
+            <div className="mb-4 rounded-sm border border-secondary/20 bg-secondary/10 px-4 py-3">
+              <p className="text-xs font-bold uppercase tracking-[0.2em] text-secondary">{labels.storeClosedOrders}</p>
+            </div>
+          )}
           <div className="bg-background p-1 rounded-sm flex items-center">
             <button
               onClick={() => setOrderType('dine-in')}
@@ -1694,12 +1774,14 @@ const KitchenView = ({
   labels,
   isSoundEnabled,
   onToggleSound,
+  storeMode,
 }: { 
   kitchenOrders: KitchenOrder[]; 
   onUpdateStatus: (orderId: string, status: Order['status']) => Promise<void>;
   labels: typeof TEXT.en;
   isSoundEnabled: boolean;
   onToggleSound: (enabled: boolean) => void;
+  storeMode: StoreMode;
 }) => {
   const [stationFilter, setStationFilter] = useState<'ALL' | 'HOT' | 'COLD'>('ALL');
   const [updatingId, setUpdatingId] = useState<string | null>(null);
@@ -1726,6 +1808,14 @@ const KitchenView = ({
 
   return (
     <div className="flex flex-col h-[calc(100vh-4rem)] animate-in fade-in duration-500">
+      {storeMode === 'closed' && (
+        <div className="p-4 lg:p-8 pb-0">
+          <div className="rounded-sm border border-secondary/20 bg-secondary/10 px-4 py-3">
+            <p className="text-[10px] uppercase tracking-[0.2em] font-bold text-secondary">{labels.storeClosed}</p>
+            <p className="text-xs text-on-surface/70 mt-1">{labels.storeClosedKitchen}</p>
+          </div>
+        </div>
+      )}
       <div className="p-4 lg:p-8 pb-0">
         <div className="flex items-center gap-4 mb-8">
           <div className="flex bg-surface-low p-1 rounded-sm border border-outline-variant/10">
@@ -2908,6 +2998,8 @@ const SettingsView = ({
   trucks,
   onUpsertTruck,
   onDeleteTruck,
+  storeMode,
+  onToggleStoreMode,
 }: {
   labels: typeof TEXT.en;
   staffMembers: StaffMember[];
@@ -2921,6 +3013,8 @@ const SettingsView = ({
   trucks: Truck[];
   onUpsertTruck: (truck: Truck) => Promise<void>;
   onDeleteTruck: (truckId: string) => Promise<void>;
+  storeMode: StoreMode;
+  onToggleStoreMode: () => void;
 }) => {
   const roleLabels: Record<StaffRole, string> = {
     Manager: labels.manager,
@@ -3021,31 +3115,60 @@ const SettingsView = ({
           <p className="font-mono text-secondary text-xs uppercase tracking-widest">{labels.settingsTitle}</p>
           <h3 className="font-headline text-3xl lg:text-4xl font-extrabold tracking-tighter">{labels.settings}</h3>
         </div>
-        <div className="flex flex-col sm:flex-row gap-2 w-full lg:w-auto">
-          <input
-            value={newStaffName}
-            onChange={(event) => setNewStaffName(event.target.value)}
-            placeholder={labels.staffNamePlaceholder}
-            className="bg-surface-high text-on-surface px-3 py-3 rounded-sm outline-none min-w-48"
-          />
-          <select
-            value={newStaffRole}
-            onChange={(event) => setNewStaffRole(event.target.value as StaffRole)}
-            className="bg-surface-high text-on-surface px-3 py-3 rounded-sm outline-none"
-          >
-            {(['Manager', 'Server', 'Kitchen'] as StaffRole[]).map((role) => (
-              <option key={role} value={role}>
-                {roleLabels[role]}
-              </option>
-            ))}
-          </select>
-          <button
-            onClick={handleAddStaff}
-            className="bg-neon-gradient text-on-primary-fixed px-6 py-3 rounded-sm font-headline text-sm font-bold active:scale-95 transition-all shadow-xl flex items-center justify-center"
-          >
-            <Plus className="mr-2 w-5 h-5" />
-            {labels.addStaff}
-          </button>
+        <div className="flex flex-col gap-3 w-full lg:w-auto">
+          <div className={cn(
+            'rounded-sm border p-4 flex flex-col sm:flex-row sm:items-center gap-4',
+            storeMode === 'open'
+              ? 'bg-secondary/10 border-secondary/20'
+              : 'bg-surface-high border-outline-variant/20',
+          )}>
+            <div className="flex-1">
+              <p className="text-[10px] uppercase tracking-[0.2em] font-bold text-on-surface/50">{labels.storeMode}</p>
+              <h4 className="font-headline text-xl font-black uppercase tracking-tight">
+                {storeMode === 'open' ? labels.storeOpen : labels.storeClosed}
+              </h4>
+              <p className="text-xs text-on-surface/60 mt-1">
+                {storeMode === 'open' ? labels.storeOpenDesc : labels.storeClosedDesc}
+              </p>
+            </div>
+            <button
+              onClick={onToggleStoreMode}
+              className={cn(
+                'px-4 py-3 rounded-sm text-xs font-black uppercase tracking-[0.2em] transition-all',
+                storeMode === 'open'
+                  ? 'bg-surface-low text-error border border-error/20'
+                  : 'bg-neon-gradient text-on-primary-fixed',
+              )}
+            >
+              {storeMode === 'open' ? labels.closeStore : labels.openStore}
+            </button>
+          </div>
+          <div className="flex flex-col sm:flex-row gap-2 w-full lg:w-auto">
+            <input
+              value={newStaffName}
+              onChange={(event) => setNewStaffName(event.target.value)}
+              placeholder={labels.staffNamePlaceholder}
+              className="bg-surface-high text-on-surface px-3 py-3 rounded-sm outline-none min-w-48"
+            />
+            <select
+              value={newStaffRole}
+              onChange={(event) => setNewStaffRole(event.target.value as StaffRole)}
+              className="bg-surface-high text-on-surface px-3 py-3 rounded-sm outline-none"
+            >
+              {(['Manager', 'Server', 'Kitchen'] as StaffRole[]).map((role) => (
+                <option key={role} value={role}>
+                  {roleLabels[role]}
+                </option>
+              ))}
+            </select>
+            <button
+              onClick={handleAddStaff}
+              className="bg-neon-gradient text-on-primary-fixed px-6 py-3 rounded-sm font-headline text-sm font-bold active:scale-95 transition-all shadow-xl flex items-center justify-center"
+            >
+              <Plus className="mr-2 w-5 h-5" />
+              {labels.addStaff}
+            </button>
+          </div>
         </div>
       </div>
 
@@ -3577,6 +3700,10 @@ export default function App() {
   const [language, setLanguage] = useState<Language>('th');
   const [currency, setCurrency] = useState<CurrencyCode>('THB');
   const [theme, setTheme] = useState<ThemeMode>('dark');
+  const [storeMode, setStoreMode] = useState<StoreMode>(() => {
+    if (typeof window === 'undefined') return 'open';
+    return window.localStorage.getItem(STORE_MODE_STORAGE_KEY) === 'closed' ? 'closed' : 'open';
+  });
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [supabaseStatus, setSupabaseStatus] = useState<SupabaseConnectionState>('missing_env');
   const [menuItems, setMenuItems] = useState<MenuItem[]>([]);
@@ -3591,6 +3718,12 @@ export default function App() {
   const [staffAccounts, setStaffAccounts] = useState<StaffAccount[]>([]);
   const [permissionMatrix, setPermissionMatrix] = useState<PermissionMatrix>(DEFAULT_PERMISSION_MATRIX);
   const [isRemoteSyncing, setIsRemoteSyncing] = useState(false);
+  const storeModeRef = useRef<StoreMode>(storeMode);
+
+  useEffect(() => {
+    storeModeRef.current = storeMode;
+    localStorage.setItem(STORE_MODE_STORAGE_KEY, storeMode);
+  }, [storeMode]);
 
   useEffect(() => {
     document.documentElement.classList.toggle('light', theme === 'light');
@@ -3606,6 +3739,53 @@ export default function App() {
   useEffect(() => {
     localStorage.setItem('ops_currency', currency);
   }, [currency]);
+
+  const sandboxSnapshot = useMemo<SandboxState>(
+    () => ({
+      menuItems,
+      menuRecipes,
+      ingredients,
+      orders,
+      trucks,
+      staffMembers,
+      staffAccounts,
+      permissionMatrix,
+      currentTruckId,
+    }),
+    [menuItems, menuRecipes, ingredients, orders, trucks, staffMembers, staffAccounts, permissionMatrix, currentTruckId],
+  );
+
+  const loadSandboxSnapshot = () => {
+    try {
+      const raw = localStorage.getItem(SANDBOX_STORAGE_KEY);
+      if (!raw) return null;
+      const parsed = JSON.parse(raw) as Partial<SandboxState>;
+      return parsed;
+    } catch {
+      return null;
+    }
+  };
+
+  const applySandboxSnapshot = (snapshot: Partial<SandboxState>) => {
+    if (Array.isArray(snapshot.menuItems)) setMenuItems(snapshot.menuItems);
+    if (snapshot.menuRecipes) setMenuRecipes(snapshot.menuRecipes);
+    if (Array.isArray(snapshot.ingredients)) setIngredients(snapshot.ingredients);
+    if (Array.isArray(snapshot.orders)) setOrders(snapshot.orders);
+    if (Array.isArray(snapshot.trucks)) setTrucks(snapshot.trucks);
+    if (Array.isArray(snapshot.staffMembers)) setStaffMembers(snapshot.staffMembers);
+    if (Array.isArray(snapshot.staffAccounts)) setStaffAccounts(snapshot.staffAccounts);
+    if (snapshot.permissionMatrix) setPermissionMatrix(snapshot.permissionMatrix);
+    if (typeof snapshot.currentTruckId !== 'undefined') setCurrentTruckId(snapshot.currentTruckId);
+  };
+
+  const persistSandboxSnapshot = (snapshot: SandboxState) => {
+    localStorage.setItem(SANDBOX_STORAGE_KEY, JSON.stringify(snapshot));
+  };
+
+  useEffect(() => {
+    if (storeMode !== 'closed') return;
+    persistSandboxSnapshot(sandboxSnapshot);
+  }, [storeMode, sandboxSnapshot]);
 
   useEffect(() => {
     let isMounted = true;
@@ -3627,6 +3807,7 @@ export default function App() {
   }, []);
 
   const loadRemoteData = async () => {
+    if (storeModeRef.current !== 'open') return;
     setIsRemoteSyncing(true);
     const [remoteTrucks, remoteMenu, remoteRecipes, remoteIngredients, remoteOrders, remoteStaff, remotePermissions, remoteAccounts] = await Promise.all([
       fetchTrucks(),
@@ -3638,6 +3819,11 @@ export default function App() {
       fetchRolePermissions(),
       fetchStaffAccounts(),
     ]);
+
+    if (storeModeRef.current !== 'open') {
+      setIsRemoteSyncing(false);
+      return;
+    }
 
     if (remoteTrucks) {
       setTrucks(remoteTrucks);
@@ -3711,10 +3897,18 @@ export default function App() {
   };
 
   useEffect(() => {
+    if (storeMode === 'closed') {
+      const snapshot = loadSandboxSnapshot();
+      if (snapshot) {
+        applySandboxSnapshot(snapshot);
+      }
+      return;
+    }
+
     if (supabaseStatus !== 'connected') return;
     if (!isLoggedIn) {
       Promise.all([fetchStaffMembers(), fetchStaffAccounts()]).then(([remoteStaff, remoteAccounts]) => {
-        if (remoteStaff) {
+        if (remoteStaff && storeModeRef.current === 'open') {
           setStaffMembers(
             remoteStaff.map((staff) => ({
               id: staff.id,
@@ -3725,7 +3919,7 @@ export default function App() {
             })),
           );
         }
-        if (remoteAccounts) {
+        if (remoteAccounts && storeModeRef.current === 'open') {
           setStaffAccounts(
             remoteAccounts.map((account) => ({
               staffId: account.staffId,
@@ -3832,10 +4026,11 @@ export default function App() {
     return () => {
       unsubscribe();
     };
-  }, [isLoggedIn, supabaseStatus]);
+  }, [isLoggedIn, supabaseStatus, storeMode]);
 
   const lastProcessedOrderIds = useRef<string[]>([]);
   useEffect(() => {
+    if (storeMode === 'closed') return;
     if (orders.length === 0) return;
     
     const currentIds = orders.map(o => o.id);
@@ -3856,7 +4051,18 @@ export default function App() {
     }
     
     lastProcessedOrderIds.current = currentIds;
-  }, [orders, isSoundEnabled, currentTruckId]);
+  }, [orders, isSoundEnabled, currentTruckId, storeMode]);
+
+  const useRealStore = storeMode === 'open' && supabaseStatus === 'connected';
+  const handleToggleStoreMode = () => {
+    if (storeMode === 'open') {
+      persistSandboxSnapshot(sandboxSnapshot);
+      setStoreMode('closed');
+      setIsRemoteSyncing(false);
+      return;
+    }
+    setStoreMode('open');
+  };
 
   const handleChangeStock = (itemId: string, nextStock: number, _reason?: string) => {
     setMenuItems((prev) =>
@@ -3867,7 +4073,7 @@ export default function App() {
       }),
     );
 
-    if (supabaseStatus === 'connected') {
+    if (useRealStore) {
       updateMenuItemStock(itemId, Math.max(0, nextStock)).catch(() => {
         console.warn('[supabase] stock update failed');
       });
@@ -3902,7 +4108,7 @@ export default function App() {
     };
     setOrders((prev) => [localOrder, ...prev].slice(0, 50));
 
-    if (supabaseStatus === 'connected') {
+    if (useRealStore) {
       const remoteOrder = await insertOrder(localOrder);
       if (remoteOrder) {
         setOrders((prev) => [remoteOrder, ...prev.filter((order) => order.id !== localOrder.id)].slice(0, 50));
@@ -3912,7 +4118,7 @@ export default function App() {
 
   const handleUpdateOrderStatus = async (orderId: string, status: Order['status']) => {
     setOrders((prev) => prev.map((order) => (order.id === orderId ? { ...order, status } : order)));
-    if (supabaseStatus === 'connected') {
+    if (useRealStore) {
       await updateOrderStatus(orderId, status);
     }
   };
@@ -3929,7 +4135,7 @@ export default function App() {
     active?: boolean;
   }) => {
     const uploadedImage =
-      supabaseStatus === 'connected' && payload.imageFile
+      useRealStore && payload.imageFile
         ? await uploadOpsImage(payload.imageFile, 'menus')
         : null;
     const nextId = `m-${Date.now().toString(36)}`;
@@ -3953,7 +4159,7 @@ export default function App() {
     if (payload.recipeLines && payload.recipeLines.length > 0) {
       setMenuRecipes((prev) => ({ ...prev, [nextItem.id]: payload.recipeLines ?? [] }));
     }
-    if (supabaseStatus === 'connected') {
+    if (useRealStore) {
       const remote = await insertMenuItem(nextItem);
       if (remote) {
         setMenuItems((prev) =>
@@ -3984,7 +4190,7 @@ export default function App() {
     imageFile?: File | null;
   }) => {
     const uploadedImage =
-      supabaseStatus === 'connected' && payload.imageFile
+      useRealStore && payload.imageFile
         ? await uploadOpsImage(payload.imageFile, 'ingredients')
         : null;
     const nextIngredient: IngredientItem = {
@@ -4000,7 +4206,7 @@ export default function App() {
         `https://picsum.photos/seed/ing-${Date.now()}/300/300`,
     };
     setIngredients((prev) => [nextIngredient, ...prev]);
-    if (supabaseStatus === 'connected') {
+    if (useRealStore) {
       const remote = await insertIngredient(nextIngredient);
       if (remote) {
         setIngredients((prev) =>
@@ -4060,7 +4266,7 @@ export default function App() {
       }),
     );
 
-    if (supabaseStatus === 'connected') {
+    if (useRealStore) {
       if (updatedMenu) {
         insertMenuItem(updatedMenu).catch(() => {
           console.warn('[supabase] update menu cost failed');
@@ -4102,7 +4308,7 @@ export default function App() {
       }),
     );
 
-    if (supabaseStatus === 'connected' && updatedIngredient) {
+    if (useRealStore && updatedIngredient) {
       insertIngredient(updatedIngredient).catch(() => {
         console.warn('[supabase] update ingredient failed');
       });
@@ -4111,7 +4317,7 @@ export default function App() {
 
   const handleDeleteIngredient = async (ingredientId: string) => {
     setIngredients((prev) => prev.filter((item) => item.id !== ingredientId));
-    if (supabaseStatus === 'connected') {
+    if (useRealStore) {
       const ok = await deleteIngredient(ingredientId);
       if (!ok) {
         console.warn('[supabase] delete ingredient failed');
@@ -4140,7 +4346,7 @@ export default function App() {
       delete next[itemId];
       return next;
     });
-    if (supabaseStatus === 'connected') {
+    if (useRealStore) {
       const ok = await deleteMenuItem(itemId);
       if (!ok) {
         console.warn('[supabase] delete menu item failed');
@@ -4166,7 +4372,7 @@ export default function App() {
         return updated;
       }),
     );
-    if (supabaseStatus === 'connected' && updated) {
+    if (useRealStore && updated) {
       await insertMenuItem(updated);
     }
   };
@@ -4193,7 +4399,7 @@ export default function App() {
       }),
     );
 
-    if (supabaseStatus === 'connected' && updatedMenu) {
+    if (useRealStore && updatedMenu) {
       await insertMenuItem(updatedMenu);
     }
   };
@@ -4234,7 +4440,7 @@ export default function App() {
       active: true,
     };
     setStaffMembers((prev) => [newStaff, ...prev]);
-    if (supabaseStatus === 'connected') {
+    if (useRealStore) {
       upsertStaffMember({
         id: newStaff.id,
         name: newStaff.name,
@@ -4256,7 +4462,7 @@ export default function App() {
         return updatedStaff;
       }),
     );
-    if (supabaseStatus === 'connected' && updatedStaff) {
+    if (useRealStore && updatedStaff) {
       upsertStaffMember({
         id: updatedStaff.id,
         name: updatedStaff.name,
@@ -4271,7 +4477,7 @@ export default function App() {
 
   const handleSavePermissions = async (nextMatrix: PermissionMatrix) => {
     setPermissionMatrix(nextMatrix);
-    if (supabaseStatus !== 'connected') return;
+    if (!useRealStore) return;
     const roles: StaffRole[] = ['Manager', 'Server', 'Kitchen'];
     await Promise.all(
       roles.map((role) =>
@@ -4286,7 +4492,7 @@ export default function App() {
   const handleDeleteStaff = async (staffId: string) => {
     setStaffMembers((prev) => prev.filter((staff) => staff.id !== staffId));
     setStaffAccounts((prev) => prev.filter((account) => account.staffId !== staffId));
-    if (supabaseStatus === 'connected') {
+    if (useRealStore) {
       await deleteStaffMember(staffId);
     }
   };
@@ -4307,7 +4513,7 @@ export default function App() {
         },
       ];
     });
-    if (supabaseStatus === 'connected') {
+    if (useRealStore) {
       await upsertStaffAccount({
         staffId: payload.staffId,
         username: payload.username,
@@ -4325,14 +4531,14 @@ export default function App() {
       if (exists) return prev.map(t => t.id === truck.id ? truck : t);
       return [...prev, truck];
     });
-    if (supabaseStatus === 'connected') {
+    if (useRealStore) {
       await upsertTruck(truck);
     }
   };
 
   const handleDeleteTruck = async (truckId: string) => {
     setTrucks(prev => prev.filter(t => t.id !== truckId));
-    if (supabaseStatus === 'connected') {
+    if (useRealStore) {
       await deleteTruck(truckId);
     }
   };
@@ -4343,13 +4549,13 @@ export default function App() {
       return { ok: false, error: labels.loginFailed };
     }
 
-    if (staffAccounts.length === 0 && supabaseStatus !== 'connected') {
+    if (staffAccounts.length === 0 && (storeMode === 'closed' || supabaseStatus !== 'connected')) {
       setIsLoggedIn(true);
       setView('dashboard');
       setMobileMenuOpen(false);
       return { ok: true };
     }
-    if (staffAccounts.length === 0 && supabaseStatus === 'connected') {
+    if (staffAccounts.length === 0 && supabaseStatus === 'connected' && storeMode === 'open') {
       return { ok: false, error: labels.loginNoAccount };
     }
 
@@ -4403,7 +4609,7 @@ export default function App() {
     };
     reader.readAsDataURL(file);
 
-    if (supabaseStatus === 'connected') {
+    if (useRealStore) {
       const publicUrl = await uploadOpsImage(file, 'staff');
       if (publicUrl) {
         const updatedStaff = { ...currentUser, image: publicUrl };
@@ -4435,7 +4641,7 @@ export default function App() {
       ),
     );
 
-    if (supabaseStatus === 'connected') {
+    if (useRealStore) {
       const updated = await updateStaffPassword({
         staffId: payload.staffId,
         passwordHash: nextHash,
@@ -4473,6 +4679,7 @@ export default function App() {
             labels={labels} 
             formatMoney={formatMoney} 
             onViewHistory={() => setView('orderHistory')}
+            storeMode={storeMode}
           />
         );
       case 'orderHistory':
@@ -4481,6 +4688,7 @@ export default function App() {
             orders={orders.filter(o => !currentTruckId || o.truckId === currentTruckId)} 
             labels={labels} 
             formatMoney={formatMoney} 
+            storeMode={storeMode}
           />
         );
       case 'orders': 
@@ -4491,6 +4699,7 @@ export default function App() {
             labels={labels} 
             formatMoney={formatMoney} 
             todayOrderCount={orders.filter(o => new Date(o.createdAt || 0).toDateString() === new Date().toDateString() && (!currentTruckId || o.truckId === currentTruckId)).length}
+            storeMode={storeMode}
           />
         );
       case 'inventoryMenu':
@@ -4530,6 +4739,7 @@ export default function App() {
             labels={labels} 
             isSoundEnabled={isSoundEnabled}
             onToggleSound={setIsSoundEnabled}
+            storeMode={storeMode}
           />
         );
       case 'settings':
@@ -4547,6 +4757,8 @@ export default function App() {
             trucks={trucks}
             onUpsertTruck={handleUpsertTruck}
             onDeleteTruck={handleDeleteTruck}
+            storeMode={storeMode}
+            onToggleStoreMode={handleToggleStoreMode}
           />
         );
       default: 
@@ -4557,6 +4769,7 @@ export default function App() {
             labels={labels} 
             formatMoney={formatMoney} 
             onViewHistory={() => setView('orderHistory')}
+            storeMode={storeMode}
           />
         );
     }
@@ -4575,6 +4788,13 @@ export default function App() {
   };
 
   const getSubtitle = () => {
+    if (storeMode === 'closed' && (view === 'dashboard' || view === 'orders' || view === 'kitchen' || view === 'orderHistory')) {
+      return (
+        <span className="text-secondary font-bold">
+          {labels.storeClosed}
+        </span>
+      );
+    }
     if (view === 'dashboard' || view === 'orders') {
       return (
         <>
@@ -4622,6 +4842,8 @@ export default function App() {
           title={getTitle()}
           subtitle={getSubtitle()}
           supabaseStatus={supabaseStatus}
+          storeMode={storeMode}
+          onToggleStoreMode={handleToggleStoreMode}
           labels={labels}
           language={language}
           onToggleLanguage={() => setLanguage((prev) => (prev === 'en' ? 'th' : 'en'))}
@@ -4637,6 +4859,31 @@ export default function App() {
           onLogout={handleLogout}
           onUpdateUserImage={handleUpdateUserImage}
         />
+        <div className="px-4 lg:px-8 pt-4">
+          <div
+            className={cn(
+              'rounded-sm border px-4 py-3 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2',
+              storeMode === 'open'
+                ? 'bg-secondary/10 border-secondary/20'
+                : 'bg-primary/10 border-primary/20',
+            )}
+          >
+            <div className="flex items-center gap-3">
+              <span
+                className={cn(
+                  'w-2.5 h-2.5 rounded-full',
+                  storeMode === 'open' ? 'bg-secondary animate-pulse' : 'bg-primary animate-pulse',
+                )}
+              />
+              <p className="text-[10px] font-black uppercase tracking-[0.25em] text-on-surface/60">
+                {storeMode === 'open' ? 'LIVE MODE' : 'TEST MODE'}
+              </p>
+            </div>
+            <p className="text-xs text-on-surface/70">
+              {storeMode === 'open' ? labels.storeOpenDesc : labels.storeClosedDesc}
+            </p>
+          </div>
+        </div>
         
         <div className="flex-1 p-0">
           <AnimatePresence mode="wait">
