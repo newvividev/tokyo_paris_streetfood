@@ -1,4 +1,5 @@
 import { getSupabaseClient, isSupabaseConfigured } from './supabase';
+import { logWarn } from './app-logger';
 
 export type DbMenuItem = {
   id: string;
@@ -197,7 +198,7 @@ export const uploadOpsImage = async (
       contentType: file.type || undefined,
     });
     if (error) {
-      console.warn('[supabase] image upload failed', error.message);
+      logWarn('image_upload_failed', { bucket, pathPrefix, message: error.message });
       return null;
     }
 
@@ -248,7 +249,7 @@ export const insertMenuItem = async (item: DbMenuItem): Promise<DbMenuItem | nul
     };
     const { data, error } = await supabase.from('menu_items').upsert(payload).select().single();
     if (error || !data) {
-      console.warn('[supabase] menu insert failed', error?.message ?? 'unknown error');
+      logWarn('menu_upsert_failed', { message: error?.message ?? 'unknown error', menuId: item.id });
       return null;
     }
     return normalizeMenuItem(data);
@@ -349,7 +350,7 @@ export const insertIngredient = async (ingredient: DbIngredient): Promise<DbIngr
     };
     const { data, error } = await supabase.from('ingredients').upsert(payload).select().single();
     if (error || !data) {
-      console.warn('[supabase] ingredient insert failed', error?.message ?? 'unknown error');
+      logWarn('ingredient_upsert_failed', { message: error?.message ?? 'unknown error', ingredientId: ingredient.id });
       return null;
     }
     return normalizeIngredient(data);
@@ -459,7 +460,7 @@ export const insertOrder = async (order: DbOrder): Promise<DbOrder | null> => {
     };
     const { data, error } = await supabase.from('orders').insert(payload).select().single();
     if (error || !data) {
-      console.warn('[supabase] order insert failed', error?.message ?? 'unknown error');
+      logWarn('order_upsert_failed', { message: error?.message ?? 'unknown error', orderId: order.id });
       return null;
     }
     return normalizeOrder(data);

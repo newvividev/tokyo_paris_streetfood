@@ -67,15 +67,52 @@ import {
   upsertStaffMember,
   type DbTruck,
 } from './lib/supabase-data';
+import { logInfo, logWarn } from './lib/app-logger';
 
 // --- Types ---
 
-type View = 'dashboard' | 'orders' | 'inventoryIngredients' | 'inventoryMenu' | 'kitchen' | 'settings' | 'login';
+type View = 'dashboard' | 'orders' | 'orderHistory' | 'inventoryIngredients' | 'inventoryMenu' | 'kitchen' | 'settings' | 'login';
 type Language = 'en' | 'th';
 type ThemeMode = 'dark' | 'light';
 type CurrencyCode = 'THB' | 'JPY' | 'USD' | 'EUR';
 type StoreMode = 'open' | 'closed';
 type StaffRole = 'Manager' | 'Server' | 'Kitchen';
+const ROUTE_PATHS: Record<View, string> = {
+  dashboard: '/dashboard',
+  orders: '/orders',
+  orderHistory: '/orders/history',
+  inventoryIngredients: '/inventory/ingredients',
+  inventoryMenu: '/inventory/menu',
+  kitchen: '/kitchen',
+  settings: '/settings',
+  login: '/login',
+};
+
+const getViewFromPath = (pathname: string): View => {
+  const normalized = pathname.replace(/\/+$/, '') || '/';
+  switch (normalized) {
+    case '/dashboard':
+      return 'dashboard';
+    case '/orders':
+      return 'orders';
+    case '/orders/history':
+      return 'orderHistory';
+    case '/inventory/ingredients':
+      return 'inventoryIngredients';
+    case '/inventory/menu':
+      return 'inventoryMenu';
+    case '/kitchen':
+      return 'kitchen';
+    case '/settings':
+      return 'settings';
+    case '/login':
+    case '/':
+    default:
+      return 'login';
+  }
+};
+
+const getPathFromView = (view: View) => ROUTE_PATHS[view] ?? '/login';
 
 type RolePermission = {
   dashboard: boolean;
@@ -718,6 +755,7 @@ const Sidebar = ({
         {menuItems.map((item) => (
           <button
             key={item.id}
+            data-testid={`nav-${item.id}`}
             onClick={() => {
               setView(item.id as View);
               onNavigate?.();
@@ -839,6 +877,7 @@ const TopBar = ({
         </div>
         {canToggleStoreMode && (
           <button
+            data-testid="store-mode-toggle"
             onClick={onToggleStoreMode}
             className={cn(
               'px-3 py-2 rounded-sm text-xs font-bold uppercase tracking-wider flex items-center gap-2 border transition-colors',
@@ -880,6 +919,7 @@ const TopBar = ({
           {theme === 'dark' ? labels.dark : labels.light}
         </button>
         <select
+          data-testid="truck-select"
           className="bg-surface-high text-on-surface text-xs font-bold uppercase tracking-wider px-4 py-2 rounded-sm outline-none border border-outline-variant/10 min-w-[200px]"
           value={currentTruckId || ''}
           onChange={(e) => onTruckChange(e.target.value)}
@@ -1018,6 +1058,7 @@ const MobileBottomNav = ({
         {items.map((item) => (
           <button
             key={item.id}
+            data-testid={`mobile-nav-${item.id}`}
             onClick={() => setView(item.id)}
             className={cn(
               'flex flex-col items-center justify-center py-2 rounded-sm text-[10px] font-bold',
@@ -1269,6 +1310,7 @@ const DashboardView = ({
               <span className="px-3 py-1 bg-primary/10 text-primary text-[10px] font-black uppercase tracking-tighter border border-primary/20 italic">LIVE TRANSACTIONS</span>
             </div>
             <button 
+              data-testid="dashboard-view-history"
               onClick={onViewHistory}
               className="text-[10px] font-black uppercase tracking-[0.2em] text-on-surface/40 flex items-center gap-2 hover:text-primary transition-colors"
             >
@@ -1595,6 +1637,7 @@ const POSView = ({
         <div className="flex gap-3 mb-8 overflow-x-auto pb-2 custom-scrollbar">
           {categories.map(cat => (
             <button 
+              data-testid={`pos-category-${cat}`}
               key={cat} 
               onClick={() => setSelectedCategory(cat)}
               className={cn(
@@ -1612,6 +1655,7 @@ const POSView = ({
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6">
           {saleMenuItems.map(item => (
             <div 
+              data-testid={`pos-item-${item.id}`}
               key={item.id} 
               onClick={() => addToCart(item)}
               className="group bg-surface-low rounded-xl overflow-hidden cursor-pointer hover:bg-surface-high transition-all active:scale-[0.98]"
@@ -1673,12 +1717,14 @@ const POSView = ({
           </div>
           <div className="mt-4 space-y-2">
             <input
+              data-testid="customer-name"
               value={customer}
               onChange={(event) => setCustomer(event.target.value)}
               placeholder={labels.customerName}
               className="w-full bg-surface-high px-3 py-2 rounded-sm text-sm text-on-surface placeholder:text-on-surface/40 outline-none"
             />
             <input
+              data-testid="order-note"
               value={note}
               onChange={(event) => setNote(event.target.value)}
               placeholder={labels.orderNote}
@@ -1772,6 +1818,7 @@ const POSView = ({
             </div>
           </div>
           <button
+            data-testid="pos-submit-order"
             onClick={submitOrder}
             disabled={cart.length === 0 || isSubmitting}
             className="w-full py-5 bg-neon-gradient disabled:opacity-40 text-on-primary-fixed font-headline font-extrabold text-lg uppercase tracking-widest rounded-sm shadow-xl hover:shadow-primary/20 active:scale-95 transition-all duration-200"
@@ -1928,7 +1975,8 @@ const KitchenView = ({
                 </div>
 
                 <div className="mt-8">
-                  <button 
+                  <button
+                    data-testid={`kitchen-action-${order.id}`}
                     onClick={() => handleAction(order)}
                     disabled={updatingId === order.id}
                     className={cn(
@@ -2277,6 +2325,7 @@ const MenuView = ({
                 <span className="text-[10px] text-on-surface/55">{labels.menuFieldHintName}</span>
               </div>
               <input
+                data-testid="menu-name"
                 className="w-full bg-background/30 px-2 py-1 rounded-sm outline-none"
                 placeholder={labels.menuName}
                 value={newMenu.name}
@@ -2289,6 +2338,7 @@ const MenuView = ({
                 <span className="text-[10px] text-on-surface/55">{labels.menuFieldHintCategory}</span>
               </div>
               <select
+                data-testid="menu-category"
                 className="w-full bg-background/30 px-2 py-1 rounded-sm outline-none"
                 value={newMenu.category}
                 onChange={(event) => setNewMenu((prev) => ({ ...prev, category: event.target.value }))}
@@ -2314,6 +2364,7 @@ const MenuView = ({
               
               <div className="flex gap-2 mb-4">
                 <select
+                  data-testid="menu-recipe-ingredient"
                   className="flex-1 bg-background/40 px-3 py-2 rounded-sm text-xs outline-none"
                   value={draftRecipeIngredientId}
                   onChange={(event) => setDraftRecipeIngredientId(event.target.value)}
@@ -2325,6 +2376,7 @@ const MenuView = ({
                 </select>
                 <div className="w-24">
                   <input
+                    data-testid="menu-recipe-qty"
                     type="number"
                     min="0"
                     step="0.01"
@@ -2335,6 +2387,7 @@ const MenuView = ({
                   />
                 </div>
                 <button
+                  data-testid="menu-recipe-add"
                   type="button"
                   onClick={addDraftIngredientToRecipe}
                   className="bg-secondary text-background px-4 py-2 rounded-sm text-[10px] font-black uppercase tracking-tighter hover:scale-95 active:scale-90 transition-transform"
@@ -2385,6 +2438,7 @@ const MenuView = ({
                     <span className="text-[10px] font-semibold text-on-surface/50 uppercase tracking-widest">{labels.cost} (Manual Fallback)</span>
                   </div>
                   <input
+                    data-testid="menu-cost"
                     className="w-full bg-background/30 px-3 py-2 rounded-sm outline-none text-xs font-mono"
                     placeholder={labels.cost}
                     type="number"
@@ -2401,6 +2455,7 @@ const MenuView = ({
                 <span className="text-[10px] text-on-surface/55">{labels.menuFieldHintPrice}</span>
               </div>
               <input
+                data-testid="menu-price"
                 className="w-full bg-background/30 px-2 py-1 rounded-sm outline-none"
                 placeholder={labels.price}
                 type="number"
@@ -2415,6 +2470,7 @@ const MenuView = ({
                 <span className="text-[10px] text-on-surface/55">{labels.menuFieldHintStock}</span>
               </div>
               <input
+                data-testid="menu-stock"
                 className="w-full bg-background/30 px-2 py-1 rounded-sm outline-none"
                 placeholder={labels.stock}
                 type="number"
@@ -2431,6 +2487,7 @@ const MenuView = ({
               <span className="text-[10px] text-on-surface/55">{labels.menuFieldHintDesc}</span>
             </div>
             <input
+              data-testid="menu-description"
               className="w-full bg-background/30 px-2 py-1 rounded-sm outline-none"
               placeholder={labels.orderNote}
               value={newMenu.description}
@@ -2443,6 +2500,7 @@ const MenuView = ({
               <span className="text-[10px] text-on-surface/55">{labels.menuFieldHintImage}</span>
             </div>
             <input
+              data-testid="menu-image"
               className="w-full bg-background/30 px-2 py-1 rounded-sm outline-none file:mr-3 file:px-3 file:py-1 file:rounded-sm file:border-0 file:bg-surface-high file:text-on-surface"
               type="file"
               accept="image/*"
@@ -2463,6 +2521,7 @@ const MenuView = ({
             </button>
           </label>
         <button
+          data-testid="menu-submit"
           onClick={submitNewMenu}
           disabled={isSubmittingMenu}
           className="bg-neon-gradient text-on-primary-fixed px-6 py-2 rounded-sm font-bold disabled:opacity-60"
@@ -2477,6 +2536,7 @@ const MenuView = ({
           <h4 className="font-headline text-lg font-bold">{labels.addIngredient}</h4>
           <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
             <input
+              data-testid="ingredient-name"
               className="bg-background/60 px-3 py-2 rounded-sm outline-none"
               placeholder={labels.ingredientName}
               value={newIngredient.name}
@@ -2485,6 +2545,7 @@ const MenuView = ({
             <label className="block text-xs text-on-surface/70 bg-background/60 px-3 py-2 rounded-sm">
               {labels.uploadImage}
               <input
+                data-testid="ingredient-image"
                 className="mt-1 w-full bg-background/30 px-2 py-1 rounded-sm outline-none file:mr-3 file:px-3 file:py-1 file:rounded-sm file:border-0 file:bg-surface-high file:text-on-surface"
                 type="file"
                 accept="image/*"
@@ -2492,6 +2553,7 @@ const MenuView = ({
               />
             </label>
             <input
+              data-testid="ingredient-stock"
               className="bg-background/60 px-3 py-2 rounded-sm outline-none"
               placeholder={labels.ingredientStock}
               type="number"
@@ -2500,6 +2562,7 @@ const MenuView = ({
               onChange={(event) => setNewIngredient((prev) => ({ ...prev, stock: Number(event.target.value) }))}
             />
             <input
+              data-testid="ingredient-cost"
               className="bg-background/60 px-3 py-2 rounded-sm outline-none"
               placeholder={labels.ingredientUnitCost}
               type="number"
@@ -2509,6 +2572,7 @@ const MenuView = ({
             />
           </div>
           <button
+            data-testid="ingredient-submit"
             onClick={submitNewIngredient}
             disabled={isSubmittingIngredient}
             className="bg-neon-gradient text-on-primary-fixed px-6 py-2 rounded-sm font-bold disabled:opacity-60"
@@ -2557,6 +2621,7 @@ const MenuView = ({
                 </td>
                 <td className="px-6 py-5 text-center">
                   <select
+                    data-testid={`menu-row-category-${item.id}`}
                     className="w-28 bg-background/60 text-center rounded-sm px-2 py-1 text-xs outline-none"
                     value={item.category}
                     onChange={(event) => onUpdateMenuMeta(item.id, { category: event.target.value })}
@@ -2570,6 +2635,7 @@ const MenuView = ({
                 </td>
                 <td className="px-6 py-5 text-right font-mono text-sm text-on-surface/60">
                   <input
+                    data-testid={`menu-row-cost-${item.id}`}
                     className="w-24 bg-background/40 text-right rounded-sm px-2 py-1 text-xs outline-none cursor-not-allowed opacity-80"
                     type="number"
                     min="0"
@@ -2582,6 +2648,7 @@ const MenuView = ({
                 </td>
                 <td className="px-6 py-5 text-right font-mono text-sm font-bold text-secondary">
                   <input
+                    data-testid={`menu-row-price-${item.id}`}
                     className="w-24 bg-background/60 text-right rounded-sm px-2 py-1 text-xs outline-none"
                     type="number"
                     min="0"
@@ -2592,6 +2659,7 @@ const MenuView = ({
                 <td className="px-6 py-5 text-center font-mono text-sm">
                   <div className="flex items-center justify-center gap-2">
                     <button
+                      data-testid={`menu-row-stock-minus-${item.id}`}
                       onClick={() => onChangeStock(item.id, Math.max(0, item.stock - 1), labels.consume)}
                       className="w-5 h-5 bg-surface-high rounded-sm text-on-surface/60 hover:text-primary"
                     >
@@ -2599,18 +2667,21 @@ const MenuView = ({
                     </button>
                     <span>{item.stock}</span>
                     <button
+                      data-testid={`menu-row-stock-plus-${item.id}`}
                       onClick={() => onChangeStock(item.id, item.stock + 1, labels.restock)}
                       className="w-5 h-5 bg-surface-high rounded-sm text-on-surface/60 hover:text-primary"
                     >
                       +
                     </button>
                     <button
+                      data-testid={`menu-row-stock-plus5-${item.id}`}
                       onClick={() => onChangeStock(item.id, item.stock + 5, labels.restock)}
                       className="px-2 h-5 bg-surface-high rounded-sm text-[10px] font-bold text-on-surface/60 hover:text-primary"
                     >
                       {labels.quickAdd5}
                     </button>
                     <button
+                      data-testid={`menu-row-stock-minus5-${item.id}`}
                       onClick={() => onChangeStock(item.id, Math.max(0, item.stock - 5), labels.consume)}
                       className="px-2 h-5 bg-surface-high rounded-sm text-[10px] font-bold text-on-surface/60 hover:text-primary"
                     >
@@ -2620,9 +2691,10 @@ const MenuView = ({
                 </td>
                 <td className="px-6 py-5">
                   <div className="flex justify-center">
-                    <button
-                      onClick={() => onToggleMenuActive(item.id, !item.active)}
-                      className={cn(
+                  <button
+                    data-testid={`menu-row-toggle-${item.id}`}
+                    onClick={() => onToggleMenuActive(item.id, !item.active)}
+                    className={cn(
                         'text-[10px] font-bold uppercase tracking-widest px-2 py-1 rounded-full',
                         item.active ? 'bg-primary/15 text-primary' : 'bg-error/20 text-error',
                       )}
@@ -2634,6 +2706,7 @@ const MenuView = ({
                 </td>
                 <td className="px-6 py-5 text-center">
                   <button
+                    data-testid={`menu-delete-${item.id}`}
                     onClick={() => {
                       const ok = window.confirm(`${labels.remove}: ${item.name}?`);
                       if (!ok) return;
@@ -2786,7 +2859,7 @@ const IngredientsView = ({
     stock: number;
     category?: string;
     imageFile?: File | null;
-  }) => Promise<void>;
+  }) => Promise<boolean>;
   onUpdateIngredient: (
     ingredientId: string,
     patch: Partial<Pick<IngredientItem, 'name' | 'category' | 'stock' | 'unitCost'>>,
@@ -2802,6 +2875,7 @@ const IngredientsView = ({
   });
   const [newIngredientImageFile, setNewIngredientImageFile] = useState<File | null>(null);
   const [isSubmittingIngredient, setIsSubmittingIngredient] = useState(false);
+  const [ingredientSaveError, setIngredientSaveError] = useState('');
   const [searchTerm, setSearchTerm] = useState('');
 
   const filteredIngredients = useMemo(() => {
@@ -2819,14 +2893,19 @@ const IngredientsView = ({
   const submitNewIngredient = async () => {
     if (!newIngredient.name.trim()) return;
     setIsSubmittingIngredient(true);
+    setIngredientSaveError('');
     try {
-      await onAddIngredient({
+      const saved = await onAddIngredient({
         name: newIngredient.name.trim(),
         unit: 'unit',
         unitCost: Math.max(0, newIngredient.unitCost),
         stock: Math.max(0, Math.floor(newIngredient.stock)),
         imageFile: newIngredientImageFile,
       });
+      if (!saved) {
+        setIngredientSaveError('Save to Supabase failed');
+        return;
+      }
       setNewIngredient({ name: '', unitCost: 0, stock: 0 });
       setNewIngredientImageFile(null);
     } finally {
@@ -2850,6 +2929,7 @@ const IngredientsView = ({
               <span className="text-[10px] text-on-surface/55">{labels.fieldHintName}</span>
             </div>
             <input
+              data-testid="ingredient-name"
               className="w-full bg-background/30 px-2 py-1 rounded-sm outline-none"
               placeholder={labels.ingredientName}
               value={newIngredient.name}
@@ -2863,6 +2943,7 @@ const IngredientsView = ({
               <span className="text-[10px] text-on-surface/55">{labels.fieldHintImage}</span>
             </div>
             <input
+              data-testid="ingredient-image"
               className="w-full bg-background/30 px-2 py-1 rounded-sm outline-none file:mr-3 file:px-3 file:py-1 file:rounded-sm file:border-0 file:bg-surface-high file:text-on-surface"
               type="file"
               accept="image/*"
@@ -2875,6 +2956,7 @@ const IngredientsView = ({
               <span className="text-[10px] text-on-surface/55">{labels.fieldHintStock}</span>
             </div>
             <input
+              data-testid="ingredient-stock"
               className="w-full bg-background/30 px-2 py-1 rounded-sm outline-none"
               placeholder={labels.ingredientStock}
               type="number"
@@ -2889,6 +2971,7 @@ const IngredientsView = ({
               <span className="text-[10px] text-on-surface/55">{labels.fieldHintCost}</span>
             </div>
             <input
+              data-testid="ingredient-cost"
               className="w-full bg-background/30 px-2 py-1 rounded-sm outline-none"
               placeholder={labels.ingredientUnitCost}
               type="number"
@@ -2899,6 +2982,7 @@ const IngredientsView = ({
           </div>
         </div>
         <button
+          data-testid="ingredient-submit"
           onClick={submitNewIngredient}
           disabled={isSubmittingIngredient}
           className="bg-neon-gradient text-on-primary-fixed px-6 py-2 rounded-sm font-bold disabled:opacity-60"
@@ -2939,6 +3023,7 @@ const IngredientsView = ({
                         <img src={item.image} alt={item.name} className="w-full h-full object-cover" referrerPolicy="no-referrer" />
                       </div>
                       <input
+                        data-testid={`ingredient-row-name-${item.id}`}
                         className="bg-background/40 px-2 py-1 rounded-sm outline-none text-sm font-semibold w-56 max-w-full"
                         value={item.name}
                         onChange={(event) => onUpdateIngredient(item.id, { name: event.target.value })}
@@ -2948,6 +3033,7 @@ const IngredientsView = ({
 
                   <td className="px-4 py-4 text-right">
                     <input
+                      data-testid={`ingredient-row-cost-${item.id}`}
                       className="w-28 bg-background/60 text-right rounded-sm px-2 py-1 text-xs outline-none"
                       type="number"
                       min="0"
@@ -2958,6 +3044,7 @@ const IngredientsView = ({
                   <td className="px-4 py-4 text-center">
                     <div className="flex items-center justify-center gap-2">
                       <button
+                        data-testid={`ingredient-row-stock-minus-${item.id}`}
                         onClick={() => onUpdateIngredient(item.id, { stock: Math.max(0, item.stock - 1) })}
                         className="w-5 h-5 bg-surface-high rounded-sm text-on-surface/60 hover:text-primary"
                       >
@@ -2965,6 +3052,7 @@ const IngredientsView = ({
                       </button>
                       <span className="font-mono">{item.stock}</span>
                       <button
+                        data-testid={`ingredient-row-stock-plus-${item.id}`}
                         onClick={() => onUpdateIngredient(item.id, { stock: item.stock + 1 })}
                         className="w-5 h-5 bg-surface-high rounded-sm text-on-surface/60 hover:text-primary"
                       >
@@ -2978,6 +3066,7 @@ const IngredientsView = ({
                         {stockStatus(item.stock).label}
                       </span>
                       <button
+                        data-testid={`ingredient-delete-${item.id}`}
                         onClick={() => {
                           const ok = window.confirm(`${labels.remove}: ${item.name}?`);
                           if (!ok) return;
@@ -3559,6 +3648,7 @@ const LoginView = ({
 
       <div className="absolute top-4 right-4 z-20 flex items-center gap-2">
         <button
+          data-testid="login-language-toggle"
           onClick={onToggleLanguage}
           className="px-3 py-2 rounded-sm bg-black/40 text-on-surface text-xs font-bold uppercase tracking-wider flex items-center gap-2 border border-outline-variant/20"
         >
@@ -3566,6 +3656,7 @@ const LoginView = ({
           {language.toUpperCase()}
         </button>
         <button
+          data-testid="login-theme-toggle"
           onClick={onToggleTheme}
           className="px-3 py-2 rounded-sm bg-black/40 text-on-surface text-xs font-bold uppercase tracking-wider flex items-center gap-2 border border-outline-variant/20"
         >
@@ -3607,6 +3698,7 @@ const LoginView = ({
                 <div className="relative group">
                   {staffAccounts.filter(a => a.active).length > 0 ? (
                     <select
+                      data-testid="login-username"
                       className="w-full bg-black/40 border border-outline-variant/30 rounded-sm py-4 px-5 text-on-surface focus:border-primary focus:ring-0 transition-all duration-500 text-sm outline-none appearance-none cursor-pointer"
                       value={username}
                       onChange={(event) => setUsername(event.target.value)}
@@ -3620,6 +3712,7 @@ const LoginView = ({
                     </select>
                   ) : (
                     <input
+                      data-testid="login-username"
                       className="w-full bg-black/40 border border-outline-variant/30 rounded-sm py-4 px-5 text-on-surface placeholder:text-surface-highest focus:border-primary focus:ring-0 transition-all duration-500 text-sm outline-none"
                       placeholder={labels.username}
                       value={username}
@@ -3637,6 +3730,7 @@ const LoginView = ({
                 </div>
                 <div className="relative group">
                   <input
+                    data-testid="login-password"
                     className="w-full bg-black/40 border border-outline-variant/30 rounded-sm py-4 px-5 pr-12 text-on-surface placeholder:text-surface-highest focus:border-primary focus:ring-0 transition-all duration-500 text-sm outline-none"
                     placeholder="••••••••"
                     value={password}
@@ -3662,6 +3756,7 @@ const LoginView = ({
               )}
 
               <button
+                data-testid="login-submit"
                 disabled={isSubmitting}
                 className="group relative w-full overflow-hidden bg-black border border-primary/30 py-5 rounded-sm active:scale-[0.98] transition-all duration-300 disabled:opacity-60"
               >
@@ -3677,6 +3772,7 @@ const LoginView = ({
                 <label className="font-mono text-[10px] tracking-widest uppercase text-primary/80 block ml-1 font-bold">{labels.changePasswordFirstLogin}</label>
                 <div className="relative group">
                   <input
+                    data-testid="login-reset-password"
                     className="w-full bg-black/40 border border-outline-variant/30 rounded-sm py-4 px-5 text-on-surface placeholder:text-surface-highest focus:border-primary focus:ring-0 transition-all duration-500 text-sm outline-none"
                     placeholder={labels.newPassword}
                     value={newPassword}
@@ -3690,6 +3786,7 @@ const LoginView = ({
               <div className="space-y-2">
                 <div className="relative group">
                   <input
+                    data-testid="login-reset-confirm"
                     className="w-full bg-black/40 border border-outline-variant/30 rounded-sm py-4 px-5 text-on-surface placeholder:text-surface-highest focus:border-primary focus:ring-0 transition-all duration-500 text-sm outline-none"
                     placeholder={labels.confirmPassword}
                     value={confirmPassword}
@@ -3707,6 +3804,7 @@ const LoginView = ({
               )}
 
               <button
+                data-testid="login-reset-submit"
                 disabled={isSubmitting}
                 className="group relative w-full overflow-hidden bg-black border border-primary/30 py-5 rounded-sm active:scale-[0.98] transition-all duration-300 disabled:opacity-60"
               >
@@ -3732,7 +3830,10 @@ const LoginView = ({
 // --- Main App ---
 
 export default function App() {
-  const [view, setView] = useState<View>('login');
+  const [view, setView] = useState<View>(() => {
+    if (typeof window === 'undefined') return 'login';
+    return getViewFromPath(window.location.pathname);
+  });
   const [isLoggedIn, setIsLoggedIn] = useState(false);
   const [language, setLanguage] = useState<Language>('th');
   const [currency, setCurrency] = useState<CurrencyCode>('THB');
@@ -3756,6 +3857,8 @@ export default function App() {
   const [permissionMatrix, setPermissionMatrix] = useState<PermissionMatrix>(DEFAULT_PERMISSION_MATRIX);
   const [isRemoteSyncing, setIsRemoteSyncing] = useState(false);
   const storeModeRef = useRef<StoreMode>(storeMode);
+  const pendingMenuSaveTimers = useRef<Record<string, ReturnType<typeof window.setTimeout>>>({});
+  const pendingIngredientSaveTimers = useRef<Record<string, ReturnType<typeof window.setTimeout>>>({});
 
   useEffect(() => {
     storeModeRef.current = storeMode;
@@ -3764,7 +3867,59 @@ export default function App() {
 
   useEffect(() => {
     document.documentElement.classList.toggle('light', theme === 'light');
+    localStorage.setItem('ops_theme', theme);
   }, [theme]);
+
+  useEffect(() => {
+    return () => {
+      for (const timer of Object.values(pendingMenuSaveTimers.current) as Array<ReturnType<typeof window.setTimeout>>) {
+        window.clearTimeout(timer);
+      }
+      for (const timer of Object.values(pendingIngredientSaveTimers.current) as Array<ReturnType<typeof window.setTimeout>>) {
+        window.clearTimeout(timer);
+      }
+    };
+  }, []);
+
+  useEffect(() => {
+    const handlePopState = () => {
+      setView(getViewFromPath(window.location.pathname));
+    };
+
+    window.addEventListener('popstate', handlePopState);
+    return () => window.removeEventListener('popstate', handlePopState);
+  }, []);
+
+  const navigateToView = (nextView: View, options?: { replace?: boolean }) => {
+    const previousView = view;
+    const nextPath = getPathFromView(nextView);
+    if (window.location.pathname !== nextPath) {
+      const method = options?.replace ? 'replaceState' : 'pushState';
+      window.history[method](null, '', nextPath);
+    }
+    setView(nextView);
+    if (previousView !== nextView) {
+      logInfo('route_change', {
+        from: previousView,
+        to: nextView,
+        path: nextPath,
+        mode: storeModeRef.current,
+      });
+    }
+  };
+
+  useEffect(() => {
+    if (!isLoggedIn) {
+      if (view !== 'login') {
+        navigateToView('login', { replace: true });
+      }
+      return;
+    }
+
+    if (view === 'login') {
+      navigateToView('dashboard', { replace: true });
+    }
+  }, [isLoggedIn, view]);
 
   useEffect(() => {
     const saved = localStorage.getItem('ops_currency');
@@ -3776,6 +3931,18 @@ export default function App() {
   useEffect(() => {
     localStorage.setItem('ops_currency', currency);
   }, [currency]);
+
+  useEffect(() => {
+    logInfo('app_boot', {
+      path: window.location.pathname,
+      view: getViewFromPath(window.location.pathname),
+      storeMode,
+      language,
+      theme,
+      currency,
+      isLoggedIn,
+    });
+  }, []);
 
   const sandboxSnapshot = useMemo<SandboxState>(
     () => ({
@@ -3832,9 +3999,9 @@ export default function App() {
         setSupabaseStatus(status);
       }
       if (status !== 'connected') {
-        console.warn(`[supabase] status: ${status}`);
+        logWarn('supabase_status', { status });
       } else {
-        console.info('[supabase] connected');
+        logInfo('supabase_connected');
       }
     };
     run();
@@ -3846,6 +4013,7 @@ export default function App() {
   const loadRemoteData = async () => {
     if (storeModeRef.current !== 'open') return;
     setIsRemoteSyncing(true);
+    logInfo('remote_sync_start', { mode: 'live' });
     const [remoteTrucks, remoteMenu, remoteRecipes, remoteIngredients, remoteOrders, remoteStaff, remotePermissions, remoteAccounts] = await Promise.all([
       fetchTrucks(),
       fetchMenuItems(),
@@ -3931,6 +4099,15 @@ export default function App() {
       );
     }
     setIsRemoteSyncing(false);
+    logInfo('remote_sync_complete', {
+      trucks: remoteTrucks?.length ?? 0,
+      menu: remoteMenu?.length ?? 0,
+      recipes: remoteRecipes ? Object.keys(remoteRecipes).length : 0,
+      ingredients: remoteIngredients?.length ?? 0,
+      orders: remoteOrders?.length ?? 0,
+      staff: remoteStaff?.length ?? 0,
+      accounts: remoteAccounts?.length ?? 0,
+    });
   };
 
   useEffect(() => {
@@ -3939,6 +4116,11 @@ export default function App() {
       if (snapshot) {
         applySandboxSnapshot(snapshot);
       }
+      logInfo('sandbox_loaded', {
+        menus: snapshot?.menuItems?.length ?? 0,
+        ingredients: snapshot?.ingredients?.length ?? 0,
+        orders: snapshot?.orders?.length ?? 0,
+      });
       return;
     }
 
@@ -4083,7 +4265,7 @@ export default function App() {
 
       if (hasNewIncomingOrders && isSoundEnabled) {
         const audio = new Audio('https://assets.mixkit.co/active_storage/sfx/2869/2869-preview.mp3');
-        audio.play().catch(e => console.warn('[audio] blocked', e));
+        audio.play().catch((error) => logWarn('audio_blocked', { message: error instanceof Error ? error.message : String(error) }));
       }
     }
     
@@ -4098,9 +4280,19 @@ export default function App() {
       persistSandboxSnapshot(sandboxSnapshot);
       setStoreMode('closed');
       setIsRemoteSyncing(false);
+      logInfo('store_mode_changed', {
+        from: 'open',
+        to: 'closed',
+        user: currentUser?.id ?? 'unknown',
+      });
       return;
     }
     setStoreMode('open');
+    logInfo('store_mode_changed', {
+      from: 'closed',
+      to: 'open',
+      user: currentUser?.id ?? 'unknown',
+    });
   };
 
   const handleChangeStock = (itemId: string, nextStock: number, _reason?: string) => {
@@ -4113,9 +4305,15 @@ export default function App() {
     );
 
     if (useRealStore) {
-      updateMenuItemStock(itemId, Math.max(0, nextStock)).catch(() => {
-        console.warn('[supabase] stock update failed');
-      });
+      const existing = menuItems.find((item) => item.id === itemId);
+      if (!existing) return;
+      const updatedMenu = { ...existing, stock: Math.max(0, nextStock) };
+      clearTimeout(pendingMenuSaveTimers.current[itemId]);
+      pendingMenuSaveTimers.current[itemId] = window.setTimeout(() => {
+        insertMenuItem(updatedMenu).catch(() => {
+          logWarn('menu_stock_update_failed', { menuId: itemId });
+        });
+      }, 250);
     }
   };
 
@@ -4146,6 +4344,14 @@ export default function App() {
       contactNumber: payload.contactNumber,
     };
     setOrders((prev) => [localOrder, ...prev].slice(0, 50));
+    logInfo('order_created', {
+      orderId: localOrder.id,
+      total: localOrder.total,
+      type: localOrder.type,
+      lineItems: localOrder.lineItems.length,
+      mode: useRealStore ? 'live' : 'test',
+      truckId: localOrder.truckId ?? null,
+    });
 
     if (useRealStore) {
       const remoteOrder = await insertOrder(localOrder);
@@ -4157,6 +4363,11 @@ export default function App() {
 
   const handleUpdateOrderStatus = async (orderId: string, status: Order['status']) => {
     setOrders((prev) => prev.map((order) => (order.id === orderId ? { ...order, status } : order)));
+    logInfo('order_status_changed', {
+      orderId,
+      status,
+      mode: useRealStore ? 'live' : 'test',
+    });
     if (useRealStore) {
       await updateOrderStatus(orderId, status);
     }
@@ -4193,8 +4404,17 @@ export default function App() {
         `https://picsum.photos/seed/menu-${Date.now()}/400/300`,
       description: payload.description,
       active: payload.active ?? true,
+      truckId: currentTruckId || undefined,
     };
     setMenuItems((prev) => [nextItem, ...prev]);
+    logInfo('menu_created', {
+      menuId: nextItem.id,
+      name: nextItem.name,
+      category: nextItem.category,
+      recipeLines: payload.recipeLines?.length ?? 0,
+      mode: useRealStore ? 'live' : 'test',
+      truckId: nextItem.truckId ?? null,
+    });
     if (payload.recipeLines && payload.recipeLines.length > 0) {
       setMenuRecipes((prev) => ({ ...prev, [nextItem.id]: payload.recipeLines ?? [] }));
     }
@@ -4214,7 +4434,7 @@ export default function App() {
         }));
         const ok = await replaceMenuRecipeLines(recipeMenuId, recipeLines);
         if (!ok) {
-          console.warn('[supabase] save recipe lines failed');
+          logWarn('recipe_lines_save_failed', { menuId: recipeMenuId });
           return false;
         }
       }
@@ -4247,6 +4467,12 @@ export default function App() {
         `https://picsum.photos/seed/ing-${Date.now()}/300/300`,
     };
     setIngredients((prev) => [nextIngredient, ...prev]);
+    logInfo('ingredient_created', {
+      ingredientId: nextIngredient.id,
+      name: nextIngredient.name,
+      stock: nextIngredient.stock,
+      mode: useRealStore ? 'live' : 'test',
+    });
     if (useRealStore) {
       const remote = await insertIngredient(nextIngredient);
       if (remote) {
@@ -4312,9 +4538,12 @@ export default function App() {
 
     if (useRealStore) {
       if (updatedMenu) {
-        insertMenuItem(updatedMenu).catch(() => {
-          console.warn('[supabase] update menu cost failed');
-        });
+        clearTimeout(pendingMenuSaveTimers.current[payload.menuId]);
+        pendingMenuSaveTimers.current[payload.menuId] = window.setTimeout(() => {
+        insertMenuItem(updatedMenu as MenuItem).catch(() => {
+            logWarn('menu_cost_update_failed', { menuId: payload.menuId });
+          });
+        }, 250);
       }
       replaceMenuRecipeLines(
         payload.menuId,
@@ -4324,7 +4553,7 @@ export default function App() {
           quantity: line.quantity,
         })),
       ).catch(() => {
-        console.warn('[supabase] update recipe lines failed');
+        logWarn('recipe_lines_update_failed', { menuId: payload.menuId });
       });
     }
   };
@@ -4353,18 +4582,22 @@ export default function App() {
     );
 
     if (useRealStore && updatedIngredient) {
-      insertIngredient(updatedIngredient).catch(() => {
-        console.warn('[supabase] update ingredient failed');
-      });
+      clearTimeout(pendingIngredientSaveTimers.current[ingredientId]);
+      pendingIngredientSaveTimers.current[ingredientId] = window.setTimeout(() => {
+        insertIngredient(updatedIngredient).catch(() => {
+          logWarn('ingredient_update_failed', { ingredientId });
+        });
+      }, 250);
     }
   };
 
   const handleDeleteIngredient = async (ingredientId: string) => {
     setIngredients((prev) => prev.filter((item) => item.id !== ingredientId));
+    logInfo('ingredient_deleted', { ingredientId, mode: useRealStore ? 'live' : 'test' });
     if (useRealStore) {
       const ok = await deleteIngredient(ingredientId);
       if (!ok) {
-        console.warn('[supabase] delete ingredient failed');
+        logWarn('ingredient_delete_failed', { ingredientId });
         fetchIngredients().then((remote) => {
           if (!remote || remote.length === 0) return;
           setIngredients(
@@ -4390,10 +4623,11 @@ export default function App() {
       delete next[itemId];
       return next;
     });
+    logInfo('menu_deleted', { menuId: itemId, mode: useRealStore ? 'live' : 'test' });
     if (useRealStore) {
       const ok = await deleteMenuItem(itemId);
       if (!ok) {
-        console.warn('[supabase] delete menu item failed');
+        logWarn('menu_delete_failed', { menuId: itemId });
         fetchMenuItems().then((remote) => {
           if (!remote || remote.length === 0) return;
           setMenuItems(
@@ -4417,7 +4651,12 @@ export default function App() {
       }),
     );
     if (useRealStore && updated) {
-      await insertMenuItem(updated);
+      clearTimeout(pendingMenuSaveTimers.current[itemId]);
+      pendingMenuSaveTimers.current[itemId] = window.setTimeout(() => {
+        insertMenuItem(updated).catch(() => {
+          logWarn('menu_active_update_failed', { menuId: itemId });
+        });
+      }, 250);
     }
   };
 
@@ -4442,9 +4681,23 @@ export default function App() {
         return updatedMenu;
       }),
     );
+    if (updatedMenu) {
+      logInfo('menu_meta_changed', {
+        menuId: itemId,
+        category: updatedMenu.category,
+        cost: updatedMenu.cost,
+        price: updatedMenu.price,
+        mode: useRealStore ? 'live' : 'test',
+      });
+    }
 
     if (useRealStore && updatedMenu) {
-      await insertMenuItem(updatedMenu);
+      clearTimeout(pendingMenuSaveTimers.current[itemId]);
+      pendingMenuSaveTimers.current[itemId] = window.setTimeout(() => {
+        insertMenuItem(updatedMenu).catch(() => {
+          logWarn('menu_meta_update_failed', { menuId: itemId });
+        });
+      }, 250);
     }
   };
 
@@ -4484,6 +4737,11 @@ export default function App() {
       active: true,
     };
     setStaffMembers((prev) => [newStaff, ...prev]);
+    logInfo('staff_created', {
+      staffId: newStaff.id,
+      role: newStaff.role,
+      mode: useRealStore ? 'live' : 'test',
+    });
     if (useRealStore) {
       upsertStaffMember({
         id: newStaff.id,
@@ -4492,7 +4750,7 @@ export default function App() {
         image: newStaff.image,
         active: newStaff.active,
       }).catch(() => {
-        console.warn('[supabase] add staff failed');
+        logWarn('staff_create_failed', { staffId: newStaff.id });
       });
     }
   };
@@ -4514,13 +4772,14 @@ export default function App() {
         image: updatedStaff.image,
         active: updatedStaff.active,
       }).catch(() => {
-        console.warn('[supabase] change role failed');
+        logWarn('staff_role_update_failed', { staffId, role });
       });
     }
   };
 
   const handleSavePermissions = async (nextMatrix: PermissionMatrix) => {
     setPermissionMatrix(nextMatrix);
+    logInfo('permissions_saved', { mode: useRealStore ? 'live' : 'test' });
     if (!useRealStore) return;
     const roles: StaffRole[] = ['Manager', 'Server', 'Kitchen'];
     await Promise.all(
@@ -4536,6 +4795,7 @@ export default function App() {
   const handleDeleteStaff = async (staffId: string) => {
     setStaffMembers((prev) => prev.filter((staff) => staff.id !== staffId));
     setStaffAccounts((prev) => prev.filter((account) => account.staffId !== staffId));
+    logInfo('staff_deleted', { staffId, mode: useRealStore ? 'live' : 'test' });
     if (useRealStore) {
       await deleteStaffMember(staffId);
     }
@@ -4557,6 +4817,10 @@ export default function App() {
         },
       ];
     });
+    logInfo('staff_account_created', {
+      staffId: payload.staffId,
+      mode: useRealStore ? 'live' : 'test',
+    });
     if (useRealStore) {
       await upsertStaffAccount({
         staffId: payload.staffId,
@@ -4575,6 +4839,7 @@ export default function App() {
       if (exists) return prev.map(t => t.id === truck.id ? truck : t);
       return [...prev, truck];
     });
+    logInfo('truck_saved', { truckId: truck.id, active: truck.active, mode: useRealStore ? 'live' : 'test' });
     if (useRealStore) {
       await upsertTruck(truck);
     }
@@ -4582,6 +4847,7 @@ export default function App() {
 
   const handleDeleteTruck = async (truckId: string) => {
     setTrucks(prev => prev.filter(t => t.id !== truckId));
+    logInfo('truck_deleted', { truckId, mode: useRealStore ? 'live' : 'test' });
     if (useRealStore) {
       await deleteTruck(truckId);
     }
@@ -4590,35 +4856,42 @@ export default function App() {
   const handleLogin = async (payload: { username: string; password: string }) => {
     const username = payload.username.trim().toLowerCase();
     if (!username || !payload.password) {
+      logWarn('login_failed', { reason: 'missing_credentials' });
       return { ok: false, error: labels.loginFailed };
     }
 
     if (staffAccounts.length === 0 && (storeMode === 'closed' || supabaseStatus !== 'connected')) {
       setIsLoggedIn(true);
       setCurrentUser(staffMembers.find((staff) => staff.role === 'Manager') ?? staffMembers[0] ?? DEFAULT_ADMIN_USER);
-      setView('dashboard');
+      navigateToView('dashboard', { replace: true });
       setMobileMenuOpen(false);
+      logInfo('login_success', { mode: 'fallback', role: 'Manager' });
       return { ok: true };
     }
     if (staffAccounts.length === 0 && supabaseStatus === 'connected' && storeMode === 'open') {
+      logWarn('login_failed', { reason: 'no_accounts' });
       return { ok: false, error: labels.loginNoAccount };
     }
 
     const account = staffAccounts.find((item) => item.username.toLowerCase() === username);
     if (!account || !account.active) {
+      logWarn('login_failed', { reason: 'account_not_found_or_inactive' });
       return { ok: false, error: labels.loginNoAccount };
     }
     const matchedStaff = staffMembers.find((staff) => staff.id === account.staffId);
     if (!matchedStaff) {
+      logWarn('login_failed', { reason: 'staff_not_found', staffId: account.staffId });
       return { ok: false, error: labels.loginNoAccount };
     }
 
     const incomingHash = await hashPassword(payload.password);
     if (incomingHash !== account.passwordHash) {
+      logWarn('login_failed', { reason: 'invalid_password', staffId: account.staffId });
       return { ok: false, error: labels.loginFailed };
     }
 
     if (account.mustChangePassword) {
+      logInfo('login_password_change_required', { staffId: account.staffId });
       return {
         ok: false,
         requirePasswordChange: true,
@@ -4629,16 +4902,22 @@ export default function App() {
 
     setIsLoggedIn(true);
     setCurrentUser(matchedStaff);
-    setView('dashboard');
+    navigateToView('dashboard', { replace: true });
     setMobileMenuOpen(false);
+    logInfo('login_success', {
+      staffId: matchedStaff.id,
+      role: matchedStaff.role,
+      mode: storeMode === 'open' ? 'live' : 'test',
+    });
     return { ok: true };
   };
 
   const handleLogout = () => {
     setIsLoggedIn(false);
     setCurrentUser(null);
-    setView('login');
+    navigateToView('login', { replace: true });
     setMobileMenuOpen(false);
+    logInfo('logout', { mode: storeMode === 'open' ? 'live' : 'test' });
   };
 
   const handleUpdateUserImage = async (file: File) => {
@@ -4692,9 +4971,11 @@ export default function App() {
         passwordHash: nextHash,
       });
       if (!updated) {
+        logWarn('password_reset_failed', { staffId: payload.staffId });
         return { ok: false, error: labels.loginFailed };
       }
     }
+    logInfo('password_reset_success', { staffId: payload.staffId, mode: useRealStore ? 'live' : 'test' });
 
     return { ok: true };
   };
@@ -4723,7 +5004,7 @@ export default function App() {
             menuItems={menuItems.filter(item => !currentTruckId || item.truckId === currentTruckId)} 
             labels={labels} 
             formatMoney={formatMoney} 
-            onViewHistory={() => setView('orderHistory')}
+            onViewHistory={() => navigateToView('orderHistory')}
             storeMode={storeMode}
           />
         );
@@ -4814,7 +5095,7 @@ export default function App() {
             menuItems={menuItems.filter(item => !currentTruckId || item.truckId === currentTruckId)} 
             labels={labels} 
             formatMoney={formatMoney} 
-            onViewHistory={() => setView('orderHistory')}
+            onViewHistory={() => navigateToView('orderHistory')}
             storeMode={storeMode}
           />
         );
@@ -4862,13 +5143,13 @@ export default function App() {
 
   return (
     <div className="min-h-screen bg-background text-on-surface font-sans">
-      <Sidebar activeView={view} setView={setView} labels={labels} className="fixed left-0 top-0 hidden lg:flex" />
+      <Sidebar activeView={view} setView={navigateToView} labels={labels} className="fixed left-0 top-0 hidden lg:flex" />
       {mobileMenuOpen && (
         <div className="lg:hidden fixed inset-0 z-50 bg-black/45 backdrop-blur-[1px]">
           <div className="w-72 h-full">
             <Sidebar
               activeView={view}
-              setView={setView}
+              setView={navigateToView}
               labels={labels}
               className="shadow-2xl"
               onNavigate={() => setMobileMenuOpen(false)}
@@ -4954,7 +5235,7 @@ export default function App() {
           <path d="M50 0 L100 100 L0 100 Z"></path>
         </svg>
       </div>
-      <MobileBottomNav activeView={view} setView={setView} labels={labels} />
+      <MobileBottomNav activeView={view} setView={navigateToView} labels={labels} />
     </div>
   );
 }

@@ -184,3 +184,13 @@ with check (bucket_id = 'ops-media');
 
 - Build first: `npm run build`
 - Preview: `npm run preview:pages`
+
+## Verification
+
+Run these locally before shipping:
+
+- `npm run lint`
+- `npm run build`
+- `npm run test:smoke`
+- `npm run test:browser`
+- `PROD_BASE_URL=https://your-pages-domain.pages.dev npm run test:production`
