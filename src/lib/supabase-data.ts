@@ -196,7 +196,10 @@ export const uploadOpsImage = async (
       upsert: true,
       contentType: file.type || undefined,
     });
-    if (error) return null;
+    if (error) {
+      console.warn('[supabase] image upload failed', error.message);
+      return null;
+    }
 
     const { data } = supabase.storage.from(bucket).getPublicUrl(filePath);
     return data?.publicUrl ?? null;
@@ -244,7 +247,10 @@ export const insertMenuItem = async (item: DbMenuItem): Promise<DbMenuItem | nul
       truck_id: item.truckId || null,
     };
     const { data, error } = await supabase.from('menu_items').upsert(payload).select().single();
-    if (error || !data) return null;
+    if (error || !data) {
+      console.warn('[supabase] menu insert failed', error?.message ?? 'unknown error');
+      return null;
+    }
     return normalizeMenuItem(data);
   } catch {
     return null;
@@ -342,7 +348,10 @@ export const insertIngredient = async (ingredient: DbIngredient): Promise<DbIngr
       image: ingredient.image,
     };
     const { data, error } = await supabase.from('ingredients').upsert(payload).select().single();
-    if (error || !data) return null;
+    if (error || !data) {
+      console.warn('[supabase] ingredient insert failed', error?.message ?? 'unknown error');
+      return null;
+    }
     return normalizeIngredient(data);
   } catch {
     return null;
@@ -449,7 +458,10 @@ export const insertOrder = async (order: DbOrder): Promise<DbOrder | null> => {
       contact_number: order.contactNumber ?? null,
     };
     const { data, error } = await supabase.from('orders').insert(payload).select().single();
-    if (error || !data) return null;
+    if (error || !data) {
+      console.warn('[supabase] order insert failed', error?.message ?? 'unknown error');
+      return null;
+    }
     return normalizeOrder(data);
   } catch {
     return null;

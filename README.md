@@ -51,11 +51,15 @@ create table if not exists public.menu_items (
   sku text not null default '',
   image text not null default '',
   description text not null default '',
-  is_active boolean not null default true
+  is_active boolean not null default true,
+  truck_id text null
 );
 
 alter table public.menu_items
   add column if not exists is_active boolean not null default true;
+
+alter table public.menu_items
+  add column if not exists truck_id text null;
 
 create table if not exists public.menu_recipes (
   menu_id text not null references public.menu_items(id) on delete cascade,
@@ -74,6 +78,18 @@ create table if not exists public.orders (
   type text not null default 'dine-in',
   note text null,
   line_items jsonb not null default '[]'::jsonb,
+  created_at timestamptz not null default now(),
+  truck_id text null
+);
+
+alter table public.orders
+  add column if not exists truck_id text null;
+
+create table if not exists public.trucks (
+  id text primary key,
+  name text not null,
+  location text not null default '',
+  is_active boolean not null default true,
   created_at timestamptz not null default now()
 );
 

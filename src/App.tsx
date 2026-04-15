@@ -1986,7 +1986,7 @@ const MenuView = ({
     description: string;
     recipeLines?: MenuRecipeLine[];
     active?: boolean;
-  }) => Promise<void>;
+  }) => Promise<boolean>;
   onAddIngredient: (payload: {
     name: string;
     unit: string;
@@ -1994,7 +1994,7 @@ const MenuView = ({
     stock: number;
     category?: string;
     imageFile?: File | null;
-  }) => Promise<void>;
+  }) => Promise<boolean>;
   onUpsertRecipeLine: (payload: {
     menuId: string;
     ingredientId: string;
@@ -2030,6 +2030,8 @@ const MenuView = ({
   const [newIngredientImageFile, setNewIngredientImageFile] = useState<File | null>(null);
   const [isSubmittingMenu, setIsSubmittingMenu] = useState(false);
   const [isSubmittingIngredient, setIsSubmittingIngredient] = useState(false);
+  const [menuSaveError, setMenuSaveError] = useState('');
+  const [ingredientSaveError, setIngredientSaveError] = useState('');
   const [selectedMenuId, setSelectedMenuId] = useState(menuItems[0]?.id ?? '');
   const [selectedIngredientId, setSelectedIngredientId] = useState(ingredients[0]?.id ?? '');
   const [recipeQty, setRecipeQty] = useState(1);
@@ -2139,8 +2141,9 @@ const MenuView = ({
   const submitNewMenu = async () => {
     if (!newMenu.name.trim()) return;
     setIsSubmittingMenu(true);
+    setMenuSaveError('');
     try {
-      await onAddMenuItem({
+      const saved = await onAddMenuItem({
         name: newMenu.name.trim(),
         category: newMenu.category.trim() || MENU_CATEGORY_OPTIONS[0],
         price: Math.max(0, newMenu.price),
@@ -2151,6 +2154,10 @@ const MenuView = ({
         recipeLines: draftRecipeLines,
         active: newMenu.active,
       });
+      if (!saved) {
+        setMenuSaveError('Save to Supabase failed');
+        return;
+      }
       setNewMenu({
         name: '',
         category: MENU_CATEGORY_OPTIONS[0],
@@ -2170,14 +2177,19 @@ const MenuView = ({
   const submitNewIngredient = async () => {
     if (!newIngredient.name.trim()) return;
     setIsSubmittingIngredient(true);
+    setIngredientSaveError('');
     try {
-      await onAddIngredient({
+      const saved = await onAddIngredient({
         name: newIngredient.name.trim(),
         unit: 'unit',
         unitCost: Math.max(0, newIngredient.unitCost),
         stock: Math.max(0, Math.floor(newIngredient.stock)),
         imageFile: newIngredientImageFile,
       });
+      if (!saved) {
+        setIngredientSaveError('Save to Supabase failed');
+        return;
+      }
       setNewIngredient({
         name: '',
         unitCost: 0,
@@ -2450,14 +2462,15 @@ const MenuView = ({
               {newMenu.active ? labels.statusAvailable : labels.statusOut}
             </button>
           </label>
-          <button
-            onClick={submitNewMenu}
-            disabled={isSubmittingMenu}
-            className="bg-neon-gradient text-on-primary-fixed px-6 py-2 rounded-sm font-bold disabled:opacity-60"
-          >
-            {isSubmittingMenu ? labels.uploading : labels.addMenuItem}
-          </button>
-        </div>
+        <button
+          onClick={submitNewMenu}
+          disabled={isSubmittingMenu}
+          className="bg-neon-gradient text-on-primary-fixed px-6 py-2 rounded-sm font-bold disabled:opacity-60"
+        >
+          {isSubmittingMenu ? labels.uploading : labels.addMenuItem}
+        </button>
+        {menuSaveError && <p className="text-xs text-error">{menuSaveError}</p>}
+      </div>
 
         {showIngredientPanel && (
         <div className="bg-surface-low border border-outline-variant/10 rounded-sm p-4 space-y-3">
@@ -2892,6 +2905,7 @@ const IngredientsView = ({
         >
           {isSubmittingIngredient ? labels.uploading : labels.addIngredient}
         </button>
+        {ingredientSaveError && <p className="text-xs text-error">{ingredientSaveError}</p>}
       </div>
 
       <div className="bg-surface-low border border-outline-variant/10 rounded-sm p-4">
@@ -4158,7 +4172,7 @@ export default function App() {
     description: string;
     recipeLines?: MenuRecipeLine[];
     active?: boolean;
-  }) => {
+  }): Promise<boolean> => {
     const uploadedImage =
       useRealStore && payload.imageFile
         ? await uploadOpsImage(payload.imageFile, 'menus')
@@ -4201,9 +4215,11 @@ export default function App() {
         const ok = await replaceMenuRecipeLines(recipeMenuId, recipeLines);
         if (!ok) {
           console.warn('[supabase] save recipe lines failed');
+          return false;
         }
       }
     }
+    return true;
   };
 
   const handleAddIngredient = async (payload: {
@@ -4213,7 +4229,7 @@ export default function App() {
     stock: number;
     category?: string;
     imageFile?: File | null;
-  }) => {
+  }): Promise<boolean> => {
     const uploadedImage =
       useRealStore && payload.imageFile
         ? await uploadOpsImage(payload.imageFile, 'ingredients')
@@ -4250,8 +4266,11 @@ export default function App() {
               : item,
           ),
         );
+        return true;
       }
+      return false;
     }
+    return true;
   };
 
   const handleUpsertRecipeLine = (payload: {
