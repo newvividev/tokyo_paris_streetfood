@@ -119,6 +119,7 @@ interface Order {
 
 interface KitchenOrder {
   id: string;
+  displayId: string;
   customer: string;
   type: 'dine-in' | 'takeout' | 'delivery';
   elapsed: string;
@@ -320,6 +321,7 @@ const TEXT = {
     storeClosedOrders: 'Test mode: orders are saved locally and kept separate from live data.',
     storeClosedKitchen: 'Kitchen activity in test mode stays separate from live operations.',
     adminDashboard: 'Admin Dashboard',
+    storeModeAdminOnly: 'Only admins can switch store mode.',
     posTerminal: 'POS Terminal',
     kitchenBoard: 'Kitchen Board',
     settingsTitle: 'Staff & Permissions',
@@ -478,6 +480,7 @@ const TEXT = {
     storeClosedOrders: 'โหมดทดสอบ: ออเดอร์จะถูกบันทึกแยกจากของจริง',
     storeClosedKitchen: 'งานครัวในโหมดทดสอบจะถูกเก็บแยกจากงานจริง',
     adminDashboard: 'แดชบอร์ดผู้ดูแล',
+    storeModeAdminOnly: 'เฉพาะแอดมินเท่านั้นที่สลับโหมดร้านได้',
     posTerminal: 'หน้าขาย POS',
     kitchenBoard: 'บอร์ดครัว',
     settingsTitle: 'พนักงานและสิทธิ์',
@@ -646,7 +649,8 @@ const toKitchenOrders = (orders: Order[]): KitchenOrder[] =>
           .map((part) => ({ name: part, qty: 1, station: 'HOT' as const })) ?? [];
 
       return {
-        id: order.id.startsWith('#') ? order.id : `#${order.id}`,
+        id: order.id,
+        displayId: order.id.startsWith('#') ? order.id : `#${order.id}`,
         customer: order.customer,
         type: order.type === 'takeout' ? 'takeout' : 'dine-in',
         elapsed: `${elapsedMinutes}m`,
@@ -751,6 +755,7 @@ const TopBar = ({
   currentTruckId,
   onTruckChange,
   currentUser,
+  canToggleStoreMode,
   onLogout,
   onUpdateUserImage,
 }: {
@@ -771,6 +776,7 @@ const TopBar = ({
   currentTruckId: string | null;
   onTruckChange: (id: string | null) => void;
   currentUser: StaffMember | null;
+  canToggleStoreMode: boolean;
   onLogout: () => void;
   onUpdateUserImage: (file: File) => void;
 }) => {
@@ -823,19 +829,21 @@ const TopBar = ({
         <div className={cn('hidden md:block px-3 py-1 rounded-sm border text-[10px] font-mono uppercase tracking-widest', statusClass)}>
           {statusLabel}
         </div>
-        <button
-          onClick={onToggleStoreMode}
-          className={cn(
-            'px-3 py-2 rounded-sm text-xs font-bold uppercase tracking-wider flex items-center gap-2 border transition-colors',
-            storeMode === 'open'
-              ? 'bg-secondary/10 text-secondary border-secondary/30'
-              : 'bg-surface-high text-on-surface/70 border-outline-variant/20',
-          )}
-          title={labels.storeModeHint}
-        >
-          <span className={cn('w-2 h-2 rounded-full', storeMode === 'open' ? 'bg-secondary' : 'bg-on-surface/40')} />
-          {storeMode === 'open' ? labels.storeOpen : labels.storeClosed}
-        </button>
+        {canToggleStoreMode && (
+          <button
+            onClick={onToggleStoreMode}
+            className={cn(
+              'px-3 py-2 rounded-sm text-xs font-bold uppercase tracking-wider flex items-center gap-2 border transition-colors',
+              storeMode === 'open'
+                ? 'bg-secondary/10 text-secondary border-secondary/30'
+                : 'bg-surface-high text-on-surface/70 border-outline-variant/20',
+            )}
+            title={labels.storeModeHint}
+          >
+            <span className={cn('w-2 h-2 rounded-full', storeMode === 'open' ? 'bg-secondary' : 'bg-on-surface/40')} />
+            {storeMode === 'open' ? labels.storeOpen : labels.storeClosed}
+          </button>
+        )}
         <button
           onClick={onToggleLanguage}
           className="px-3 py-2 rounded-sm bg-surface-high text-on-surface text-xs font-bold uppercase tracking-wider flex items-center gap-2"
@@ -1875,7 +1883,7 @@ const KitchenView = ({
                     )}>
                       {order.status === 'overdue' ? 'Priority Overdue' : order.status === 'delayed' ? 'Delayed Warning' : 'New Order'}
                     </span>
-                    <h3 className="font-headline text-2xl font-bold mt-1 tracking-tighter italic">{order.id}</h3>
+                    <h3 className="font-headline text-2xl font-bold mt-1 tracking-tighter italic">{order.displayId}</h3>
                     <p className="text-xs text-on-surface/40 font-mono mt-1">GUEST: {order.customer} <span className="mx-1">/</span> {order.type.toUpperCase()}</p>
                   </div>
                   <div className={cn(
@@ -3000,6 +3008,7 @@ const SettingsView = ({
   onDeleteTruck,
   storeMode,
   onToggleStoreMode,
+  canToggleStoreMode,
 }: {
   labels: typeof TEXT.en;
   staffMembers: StaffMember[];
@@ -3015,6 +3024,7 @@ const SettingsView = ({
   onDeleteTruck: (truckId: string) => Promise<void>;
   storeMode: StoreMode;
   onToggleStoreMode: () => void;
+  canToggleStoreMode: boolean;
 }) => {
   const roleLabels: Record<StaffRole, string> = {
     Manager: labels.manager,
@@ -3116,33 +3126,38 @@ const SettingsView = ({
           <h3 className="font-headline text-3xl lg:text-4xl font-extrabold tracking-tighter">{labels.settings}</h3>
         </div>
         <div className="flex flex-col gap-3 w-full lg:w-auto">
-          <div className={cn(
-            'rounded-sm border p-4 flex flex-col sm:flex-row sm:items-center gap-4',
-            storeMode === 'open'
-              ? 'bg-secondary/10 border-secondary/20'
-              : 'bg-surface-high border-outline-variant/20',
-          )}>
-            <div className="flex-1">
-              <p className="text-[10px] uppercase tracking-[0.2em] font-bold text-on-surface/50">{labels.storeMode}</p>
-              <h4 className="font-headline text-xl font-black uppercase tracking-tight">
-                {storeMode === 'open' ? labels.storeOpen : labels.storeClosed}
-              </h4>
-              <p className="text-xs text-on-surface/60 mt-1">
-                {storeMode === 'open' ? labels.storeOpenDesc : labels.storeClosedDesc}
-              </p>
-            </div>
-            <button
-              onClick={onToggleStoreMode}
+          {canToggleStoreMode && (
+            <div
               className={cn(
-                'px-4 py-3 rounded-sm text-xs font-black uppercase tracking-[0.2em] transition-all',
+                'rounded-sm border p-4 flex flex-col sm:flex-row sm:items-center gap-4',
                 storeMode === 'open'
-                  ? 'bg-surface-low text-error border border-error/20'
-                  : 'bg-neon-gradient text-on-primary-fixed',
+                  ? 'bg-secondary/10 border-secondary/20'
+                  : 'bg-surface-high border-outline-variant/20',
               )}
             >
-              {storeMode === 'open' ? labels.closeStore : labels.openStore}
-            </button>
-          </div>
+              <div className="flex-1">
+                <p className="text-[10px] uppercase tracking-[0.2em] font-bold text-on-surface/50">{labels.storeMode}</p>
+                <h4 className="font-headline text-xl font-black uppercase tracking-tight">
+                  {storeMode === 'open' ? labels.storeOpen : labels.storeClosed}
+                </h4>
+                <p className="text-xs text-on-surface/60 mt-1">
+                  {storeMode === 'open' ? labels.storeOpenDesc : labels.storeClosedDesc}
+                </p>
+              </div>
+              <button
+                onClick={onToggleStoreMode}
+                className={cn(
+                  'px-4 py-3 rounded-sm text-xs font-black uppercase tracking-[0.2em] transition-all',
+                  storeMode === 'open'
+                    ? 'bg-surface-low text-error border border-error/20'
+                    : 'bg-neon-gradient text-on-primary-fixed',
+                )}
+                title={labels.storeModeHint}
+              >
+                {storeMode === 'open' ? labels.closeStore : labels.openStore}
+              </button>
+            </div>
+          )}
           <div className="flex flex-col sm:flex-row gap-2 w-full lg:w-auto">
             <input
               value={newStaffName}
@@ -4054,7 +4069,9 @@ export default function App() {
   }, [orders, isSoundEnabled, currentTruckId, storeMode]);
 
   const useRealStore = storeMode === 'open' && supabaseStatus === 'connected';
+  const canToggleStoreMode = currentUser?.role === 'Manager';
   const handleToggleStoreMode = () => {
+    if (!canToggleStoreMode) return;
     if (storeMode === 'open') {
       persistSandboxSnapshot(sandboxSnapshot);
       setStoreMode('closed');
@@ -4759,6 +4776,7 @@ export default function App() {
             onDeleteTruck={handleDeleteTruck}
             storeMode={storeMode}
             onToggleStoreMode={handleToggleStoreMode}
+            canToggleStoreMode={canToggleStoreMode}
           />
         );
       default: 
@@ -4856,6 +4874,7 @@ export default function App() {
           currentTruckId={currentTruckId}
           onTruckChange={setCurrentTruckId}
           currentUser={currentUser}
+          canToggleStoreMode={canToggleStoreMode}
           onLogout={handleLogout}
           onUpdateUserImage={handleUpdateUserImage}
         />
