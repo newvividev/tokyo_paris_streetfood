@@ -148,6 +148,14 @@ interface StaffAccount {
   active: boolean;
 }
 
+const DEFAULT_ADMIN_USER: StaffMember = {
+  id: 'admin',
+  name: 'Admin',
+  role: 'Manager',
+  image: 'https://picsum.photos/seed/admin/100/100',
+  active: true,
+};
+
 interface IngredientItem {
   id: string;
   name: string;
@@ -4568,6 +4576,7 @@ export default function App() {
 
     if (staffAccounts.length === 0 && (storeMode === 'closed' || supabaseStatus !== 'connected')) {
       setIsLoggedIn(true);
+      setCurrentUser(staffMembers.find((staff) => staff.role === 'Manager') ?? staffMembers[0] ?? DEFAULT_ADMIN_USER);
       setView('dashboard');
       setMobileMenuOpen(false);
       return { ok: true };
